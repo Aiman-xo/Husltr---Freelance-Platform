@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # 1. The Database (PostgreSQL)
+  db:
+    image: postgres:15
+    restart: always
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    env_file:
+      - ./Hustlr-backend/.env  # This file must contain POSTGRES_USER, POSTGRES_PASSWORD, etc.
+    # Note: I removed the "environment:" block because it was causing the "empty" error
+
+  # 2. The Redis Service
+  redis:
+    image: redis:7-alpine
+    restart: always
+
+  # 3. Your Django API
+  backend:
+    build: ./Hustlr-backend
+    restart: always
+    volumes:
+      - ./Hustlr-backend:/app
+    # ports:
+    #   - "8000:8000"
+    env_file:
+      - ./Hustlr-backend/.env
+    environment:
+      - DB_HOST=db
+    depends_on:
+      - db
+      - redis
+
+  # 4. The Celery Worker
+  worker:
+    build: ./Hustlr-backend
+    command: celery -A hustlr worker --loglevel=info
+    volumes:
+      - ./Hustlr-backend:/app
+    env_file:
+      - ./Hustlr-backend/.env
+    environment:
+      - DB_HOST=db
+    depends_on:
+      - db
+      - redis
+      - backend
+  beat:
+    build: ./Hustlr-backend
+    command: celery -A hustlr beat --loglevel=info
+    volumes:
+      - ./Hustlr-backend:/app
+    env_file:
+      - ./Hustlr-backend/.env
+    environment:
+      - DB_HOST=db
+    depends_on:
+      - db
+      - redis
+      - backend
+
+  #chat websockets
+  chat-service:
+    build:
+      context: ./Hustlr-websockets
+    container_name: hustlr_chat
+    restart: always
+    # ports:
+    #   - "8001:8001"
+    env_file:
+      - ./Hustlr-backend/.env
+    environment:
+      - DB_HOST=db
+      - DJANGO_SETTINGS_MODULE=websocketproject.settings
+    command: daphne -b 0.0.0.0 -p 8001 websocketproject.asgi:application
+    depends_on:
+      - db
+      - redis
+  
+  nginx:
+    image: nginx:alpine
+    container_name: hustlr_gateway
+    restart: always
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+    ports:
+      - "80:80"  # This is now your ONLY open door
+    depends_on:
+      - backend
+      - chat-service
+
+volumes:
+  postgres_data:

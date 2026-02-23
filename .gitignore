@@ -1,0 +1,47 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments
+venv/
+hustlrvenv/
+.env/
+
+# Environment Variables
+.env
+.env.*
+*.env
+
+# Django
+db.sqlite3
+*.log
+media/
+staticfiles/
+
+# Pytest / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Celery
+celerybeat-schedule*
+celerybeat.pid
+
+# VS Code / Dev
+.vscode/
+.idea/
+.devcontainer/
+
+# Docker
+*.tar
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Git
+.git
