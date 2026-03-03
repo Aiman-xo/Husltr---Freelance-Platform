@@ -1,12 +1,20 @@
 from django.shortcuts import render
+from django.core.cache import cache
 from django.db.models import Q
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import MultiPartParser, FormParser
+
+import logging
+
 from .permissions import IsWorker
 from .models import WorkerProfile,Skill
 from .serializers import WorkerProfileReadSerializer,SkillSerializer,WorkerProfileWriteSerializer
+from employerapp.serializers import JobRequestSerializer,NotificationSerializer
+from employerapp.models import JobRequest,Notification
 
 # Create your views here.
 
@@ -102,3 +110,132 @@ class WorkerListView(APIView):
             "previous": page - 1 if start > 0 else None,
             "results": serializer.data
         }, status=status.HTTP_200_OK)
+    
+    
+logger = logging.getLogger(__name__)
+class JobInboxView(APIView):
+    permission_classes = [IsAuthenticated,IsWorker]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+
+        try:
+
+            worker_profile = request.user.profile.worker_profile
+            worker_id = worker_profile.id
+        except AttributeError:
+            return Response({'error':'worker profile not found!'},status=status.HTTP_400_BAD_REQUEST)
+        # We create a unique key for THIS worker
+        cache_key = f"worker_inbox_{worker_id}"
+        
+        # Try to get data from Redis
+        try:
+            cached_data = cache.get(cache_key)
+            
+            if cached_data:
+                print("--- CACHE HIT: Returning data from Redis ---")
+                logger.info('cache succcess!')
+                return Response(cached_data,status=status.HTTP_200_OK)
+        except Exception as e:
+            print("!!! REDIS IS DOWN - CHECKING LOG FILE !!!")
+            logger.error(f'Redis crashed{e}')
+
+        
+        print("--- CACHE MISS: Fetching from Database ---")
+
+        try:
+            # If not in Redis, go to the Database
+            active_statuses = ['pending', 'accepted', 'rejected']
+            requests = request.user.profile.worker_profile.received_job_offers.filter(
+                status__in=active_statuses
+            ).order_by('-created_at') # Always good to show newest first!
+            serializer = JobRequestSerializer(requests, many=True)
+            data = serializer.data
+            
+            # Store in Redis for 15 minutes
+            cache.set(cache_key, data, 60 * 15)
+            
+            return Response(data,status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'error':'Something went wrong!'},status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+
+
+class HandleJobRequestView(APIView):
+    def post(self, request, jobRequestId):
+        # 1. Get the action from the frontend (expecting 'accept' or 'reject')
+        action = request.data.get('action')
+        
+        if action not in ['accept', 'reject']:
+            return Response({'error': 'Invalid action'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # 2. Secure lookup: Must be 'pending' AND current user must be the Worker
+            job_req = JobRequest.objects.get(
+                pk=jobRequestId, 
+                status='pending',
+                worker__user__user=request.user 
+            )
+        except JobRequest.DoesNotExist:
+            return Response(
+                {'error': 'Job not found or you are not the assigned worker.'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # 3. Update based on the action
+        if action == 'accept':
+            job_req.status = 'accepted'
+            message = "Job accepted!"
+        else:
+            job_req.status = 'rejected'
+            message = "Job rejected."
+
+        job_req.save()
+
+        # --- CACHE INVALIDATION LOGIC START ---
+        try:
+            worker_id = job_req.worker.id
+            employer_profile_id = job_req.employer.id  # Get the employer from the job request
+
+            # 1. Clear Worker side
+            if hasattr(cache, 'delete_pattern'):
+                cache.delete_pattern(f"worker_inbox_{worker_id}")
+            else:
+                cache.delete(f"worker_inbox_{worker_id}")
+
+            # 2. Clear Employer side (The missing piece!)
+            if hasattr(cache, 'delete_pattern'):
+                cache.delete_pattern(f"employer_box_{employer_profile_id}_*")
+            else:
+                # Fallback loop if delete_pattern isn't available
+                for job_status in ['all', 'pending', 'cancelled', 'accepted', 'rejected']:
+                    for page in range(1, 5):
+                        cache.delete(f'employer_box_{employer_profile_id}_{job_status}_page_{page}')
+
+            print(f"--- CACHES DELETED for Worker {worker_id} and Employer {employer_profile_id} ---")
+            
+        except Exception as e:
+            logger.error(f"Failed to clear cache: {e}")
+        # --- CACHE INVALIDATION LOGIC END ---
+
+        return Response({'message': message, 'new_status': job_req.status}, status=status.HTTP_200_OK)
+    
+
+class GetNotificationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            # 1. Fetch notifications for the current user
+            # We use recipient=request.user because your model links to HustlrUsers
+            notifications = Notification.objects.filter(recipient=request.user)
+            serializer = NotificationSerializer(notifications, many=True)
+
+            return Response(serializer.data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response(
+                {"error": "Failed to fetch notifications"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

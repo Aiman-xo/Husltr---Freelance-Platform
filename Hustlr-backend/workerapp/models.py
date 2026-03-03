@@ -18,3 +18,6 @@ class WorkerProfile(models.Model):
     hourly_rate = models.IntegerField()
     
     skills = models.ManyToManyField(Skill,related_name='worker_skills')
+
+    def __str__(self):
+        return self.user.username

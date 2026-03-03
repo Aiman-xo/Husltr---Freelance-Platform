@@ -45,3 +45,8 @@ Thumbs.db
 
 # Git
 .git
+
+
+# Logs
+logs/
+*.log

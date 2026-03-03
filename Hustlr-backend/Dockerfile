@@ -15,7 +15,9 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     gcc \
     python3-dev \
-    musl-dev \
+    # Added for Pillow (Image processing)
+    libjpeg-dev \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 5. Install Python dependencies

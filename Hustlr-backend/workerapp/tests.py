@@ -17,7 +17,7 @@ def test_logged_user(db,test_api):
     user = HustlrUsers.objects.create_user(email='salam@gmail.com',password='salam@123')
     user_profile = Profile.objects.create(user = user,active_role='worker')
     WorkerProfile.objects.create(user=user_profile,base_Pay=200,hourly_rate = 200,experience = 2)
-    
+
     # url = reverse('login')
     # data = {
     #     'email':'salam@gmail.com',
@@ -38,3 +38,5 @@ def test_worker_list(test_logged_user):
 
     response = test_logged_user.get(url,format='json')
     print("workers Data : ",response.data)
+
+

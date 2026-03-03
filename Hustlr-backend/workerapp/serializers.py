@@ -45,3 +45,4 @@ class WorkerProfileReadSerializer(ModelSerializer):
             'id', 'name', 'avatar', 'city', 'base_Pay', 
             'job_description', 'experience', 'hourly_rate', 'skills'
         ]
+

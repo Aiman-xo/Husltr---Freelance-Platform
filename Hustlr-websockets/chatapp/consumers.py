@@ -74,7 +74,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Fetch the last 50 messages for this room
         # We use list() to evaluate the queryset inside this sync method
         messages = Message.objects.filter(room_name=self.room_name).order_by('-timestamp').values('content', 'sender_id', 'timestamp')[:50]
-    # ... rest of your code
         formatted_messages = []
         for msg in reversed(messages):
             formatted_messages.append({
@@ -92,3 +91,35 @@ class ChatConsumer(AsyncWebsocketConsumer):
             room_name=self.room_name,
             content=content
         )
+    
+# Hustlr-websockets/consumers.py
+
+class NotificationConsumer(AsyncWebsocketConsumer):
+    async def connect(self):
+        self.user_id = self.scope.get("user_id")
+        if not self.user_id:
+            print('jabbaaarrrrrrrrrrrrrrrrrrr-----------------------------')
+            await self.close()
+            return
+
+        # Group name unique to this user
+        self.notification_group = f"user_notifications_5"
+        print(f"---------DEBUG---------: Consumer connected. Group Name: '{self.notification_group}'") # Check for spaces!
+
+        await self.channel_layer.group_add(
+            self.notification_group,
+            self.channel_name
+        )
+        await self.accept()
+
+    async def disconnect(self, close_code):
+        if hasattr(self, 'notification_group'):
+            await self.channel_layer.group_discard(
+                self.notification_group,
+                self.channel_name
+            )
+
+    # This method is called when the BACKEND sends a "type": "send_notification"
+    async def send_notification(self, event):
+        # Send the payload to the worker's browser
+        await self.send(text_data=json.dumps(event["payload"]))
