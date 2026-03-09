@@ -78,6 +78,8 @@ services:
       - DB_HOST=db
       - DJANGO_SETTINGS_MODULE=websocketproject.settings
     command: daphne -b 0.0.0.0 -p 8001 websocketproject.asgi:application
+    volumes:
+      - ./Hustlr-websockets:/app
     depends_on:
       - db
       - redis

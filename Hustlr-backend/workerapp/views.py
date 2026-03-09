@@ -12,9 +12,10 @@ import logging
 
 from .permissions import IsWorker
 from .models import WorkerProfile,Skill
-from .serializers import WorkerProfileReadSerializer,SkillSerializer,WorkerProfileWriteSerializer
+from .serializers import WorkerProfileReadSerializer,SkillSerializer,WorkerProfileWriteSerializer,WorkerActiveJobSerializer,JobMaterialSerializer
 from employerapp.serializers import JobRequestSerializer,NotificationSerializer
-from employerapp.models import JobRequest,Notification
+from employerapp.models import JobRequest,Notification,JobMaterials
+from employerapp.permissions import IsEmployer
 
 # Create your views here.
 
@@ -159,6 +160,25 @@ class JobInboxView(APIView):
         except Exception as e:
             return Response({'error':'Something went wrong!'},status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
+class GetActiveJobs(APIView):
+    permission_classes = [IsAuthenticated, IsWorker]
+
+    def get(self, request):
+        active_statuses = ['starting', 'accepted', 'in_progress', 'completed']
+        
+        try:
+            # We filter jobs where the worker is the one logged in
+            active_jobs = JobRequest.objects.filter(
+                worker__user__user=request.user, 
+                status__in=active_statuses
+            ).select_related('employer__user').order_by('-created_at')
+            
+            # If no jobs found, it just returns an empty list [], which is better than an error
+            serializer = WorkerActiveJobSerializer(active_jobs, many=True, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 
@@ -186,7 +206,8 @@ class HandleJobRequestView(APIView):
         # 3. Update based on the action
         if action == 'accept':
             job_req.status = 'accepted'
-            message = "Job accepted!"
+            job_req.contract_hourly_rate = job_req.worker.hourly_rate
+            message = "Job accepted and rate locked."
         else:
             job_req.status = 'rejected'
             message = "Job rejected."
@@ -221,21 +242,98 @@ class HandleJobRequestView(APIView):
 
         return Response({'message': message, 'new_status': job_req.status}, status=status.HTTP_200_OK)
     
+    def patch(self, request, jobRequestId):
+        try:
+            job = JobRequest.objects.get( pk=jobRequestId, worker__user__user=request.user)
+        except JobRequest.DoesNotExist:
+            return Response({'error':'cannot get the Job'},status=status.HTTP_400_BAD_REQUEST)
+        if job.status != 'accepted':
+            return Response({'error': 'You can only set estimates for accepted jobs.'}, status=400)
+        estimate = request.data.get('estimated_hours')
+        
+        if estimate:
+            job.estimated_hours = float(estimate)
+            job.save()
+            return Response({"message": "Estimate updated", "estimated_hours": job.estimated_hours})
+        return Response({"error": "Invalid estimate"}, status=400)
+    
 
 class GetNotificationView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,IsWorker]
 
     def get(self, request):
         try:
             # 1. Fetch notifications for the current user
             # We use recipient=request.user because your model links to HustlrUsers
-            notifications = Notification.objects.filter(recipient=request.user)
+            notifications = Notification.objects.select_related('recipient').filter(recipient=request.user)
             serializer = NotificationSerializer(notifications, many=True)
+            unread_notification = notifications.filter(is_read=False).count()
 
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response({
+
+                'result':serializer.data,
+                'unread_count':unread_notification
+
+                }, status=status.HTTP_200_OK)
             
         except Exception as e:
             return Response(
                 {"error": "Failed to fetch notifications"}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+    
+    def post(self,request):
+        unread_notifications = Notification.objects.select_related('recipient').filter(recipient=request.user,is_read = False)
+
+        # 2. Check if there are any to update
+        if not unread_notifications.exists():
+            return Response(
+                {'message': 'No unread notifications to mark.'}, 
+                status=status.HTTP_200_OK
+            )
+        
+        unread_notifications.update(is_read=True)   
+        return Response ({'message':'All notifications Changed as read successfully!'},status=status.HTTP_200_OK)
+    
+# Job note taking view
+
+class JobMaterialsView(APIView):
+    permission_classes = [IsAuthenticated,IsWorker]
+    
+    def post(self,request):
+        data = request.data
+        
+        if not isinstance(data, list):
+            return Response({'error': 'Expected a list of items'}, status=status.HTTP_400_BAD_REQUEST)
+        if not data:
+            return Response({'error': 'List is empty'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        job_id = data[0].get('job')
+        try:
+            JobRequest.objects.get(id = job_id,worker__user__user = request.user)
+        except (JobRequest.DoesNotExist):
+            return Response({'error':'couldnt fetch job'},status=status.HTTP_400_BAD_REQUEST)
+        
+        serializer = JobMaterialSerializer(data = request.data,many=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({'message':'Note created!'},status=status.HTTP_200_OK)
+        return Response(serializer.errors,status=status.HTTP_400_BAD_REQUEST)
+    
+class SeeJobMaterialsView(APIView):
+    permission_classes = [IsAuthenticated,(IsWorker | IsEmployer)]
+    def get(self, request,job_id):
+        
+        if not job_id:
+            return Response({'error': 'job_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 2. Correct the filter path and use .order_by()
+        notes = JobMaterials.objects.filter(
+            Q(job=job_id) & (
+                
+            Q(job__worker__user__user=request.user) | Q(job__employer__user__user=request.user)
+
+            )).order_by('-created_at') 
+
+        serializer = JobMaterialSerializer(notes, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)

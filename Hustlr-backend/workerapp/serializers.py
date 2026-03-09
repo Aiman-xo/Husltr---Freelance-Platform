@@ -1,4 +1,5 @@
 from .models import WorkerProfile,Skill
+from employerapp.models import JobRequest,JobMaterials
 from rest_framework.serializers import ModelSerializer
 from rest_framework import serializers
 
@@ -46,3 +47,18 @@ class WorkerProfileReadSerializer(ModelSerializer):
             'job_description', 'experience', 'hourly_rate', 'skills'
         ]
 
+class WorkerActiveJobSerializer(ModelSerializer):
+    employer_profile_image = serializers.ImageField(source = 'employer.user.image',read_only= True)
+    employer_name = serializers.CharField(source = 'employer.company_name',read_only= True)
+    class Meta:
+        model = JobRequest
+        fields =['id','employer','worker','description','city','project_image','status','created_at','employer_profile_image','employer_name',
+                 'contract_hourly_rate','estimated_hours','start_time','end_time','is_timer_active']
+        extra_kwargs = {
+            'employer': {'read_only': True}
+        }
+
+class JobMaterialSerializer(ModelSerializer):
+    class Meta:
+        model = JobMaterials
+        fields = '__all__'

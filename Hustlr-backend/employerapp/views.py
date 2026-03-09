@@ -1,15 +1,16 @@
 from django.shortcuts import render
 from django.core.cache import cache
+from django.db import transaction
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from .models import EmployerProfile,JobRequest,Notification
 from rest_framework.parsers import MultiPartParser, FormParser
-from .serializers import EmployerProfileSerializer,JobRequestSerializer,JobRequestHandleSerializer
+from .serializers import EmployerProfileSerializer,JobRequestSerializer,JobRequestHandleSerializer,ChatContactSerializer
 from .permissions import IsEmployer
 
-from django.db.models import Q
+from django.db.models import Q,Max
 from rest_framework.pagination import PageNumberPagination
 
 from asgiref.sync import async_to_sync
@@ -63,10 +64,11 @@ class JobRequestView(APIView):
             worker_user_id = worker_user.id
             print('-------VIEW USER ID--------',worker_user_id)
 
+            truncated_desc = (job_request.description[:30] + '..') if len(job_request.description) > 30 else job_request.description
             # 3. Create Database Notification (for history)
             Notification.objects.create(
                 recipient=worker_user,
-                title="New Job Request",
+                title=f"New Request : {truncated_desc}",
                 message=f"You received a request from {employer_profile.company_name}",
                 related_id=job_request.id
             )
@@ -155,9 +157,12 @@ class JobRequestInduvidualHandleView(APIView):
             return Response({'error':f'{e}'})
         
         try:
-            job_request = JobRequest.objects.get(pk=jobRequestId,employer_id = employer_profile_id)
-            job_request.status = 'cancelled'
-            job_request.save()
+            with transaction.atomic():
+                job_request = JobRequest.objects.get(pk=jobRequestId,employer_id = employer_profile_id)
+                if job_request.status != 'pending':
+                    return Response({'error': f'Cannot cancel a request that is already {job_request.status}'}, status=400)
+                job_request.status = 'cancelled'
+                job_request.save()
 
             # --- CACHE CLEARING START ---
             # 1. Clear Employer side (all pages/statuses)
@@ -187,5 +192,36 @@ class JobRequestInduvidualHandleView(APIView):
         except AttributeError:
             return Response({'error': 'Employer profile not found'}, status=status.HTTP_400_BAD_REQUEST)
 
+ACTIVE_WORK_STATUSES = ['accepted', 'starting', 'in_progress', 'completed']
+class ChatListView(APIView):
+    permission_classes = [IsAuthenticated]
 
+    def get(self, request):
+        # 1. Get all accepted jobs for the current user
+        queryset = JobRequest.objects.filter(
+            status__in = ACTIVE_WORK_STATUSES
+        ).filter(
+            Q(employer__user__user=request.user) | Q(worker__user__user=request.user)
+        )
 
+        # 2. Group by employer and worker to find the latest interaction
+        # This prevents the "triple Jamal Musiala" issue
+        unique_chat_ids = queryset.values('employer', 'worker').annotate(
+            latest_id=Max('id')
+        ).values_list('latest_id', flat=True)
+
+        # 3. Fetch the actual objects using the IDs we found
+        accepted_contacts = JobRequest.objects.filter(
+            id__in=unique_chat_ids
+        ).select_related(
+            'employer__user__user', 
+            'worker__user__user'
+        ).order_by('-id')
+
+        serializer = ChatContactSerializer(
+            accepted_contacts, 
+            many=True, 
+            context={'request': request}
+        )
+        
+        return Response(serializer.data,status=status.HTTP_200_OK)

@@ -2,38 +2,44 @@ import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from .models import Message
+from .serializers import MessageSerializer
 
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.user_id = self.scope.get("user_id")
-        self.room_name = self.scope['url_route']['kwargs']['room_name']
+        # Room name from the URL: e.g., /ws/chat/1_5/
+        self.url_room_name = self.scope['url_route']['kwargs']['room_name']
+        # Room name from the SIGNED JWT: e.g., "1_5"
+        self.allowed_room = self.scope.get("allowed_room")
 
+        # 1. AUTH CHECK: Did the middleware find a user?
         if not self.user_id:
             await self.close()
             return
 
-        # Security check
-        allowed_ids = self.room_name.split('_')
-        if str(self.user_id) not in allowed_ids:
+        # 2. PERMISSION CHECK: 
+        # Does the room in the URL match exactly what the Backend authorized in the JWT?
+        if self.url_room_name != self.allowed_room:
+            logger.warning(f"User {self.user_id} tried to join {self.url_room_name} but only allowed in {self.allowed_room}")
             await self.close()
             return
 
-        self.room_group_name = f'chat_{self.room_name}'
+        # If we pass both, create the group name
+        self.room_group_name = f'chat_{self.url_room_name}'
 
         await self.channel_layer.group_add(
             self.room_group_name,
             self.channel_name
         )
         
-        # 1. Accept the connection first
         await self.accept()
 
-        # 2. Fetch and send old messages to the user who just connected
+        # Fetch and send history
         messages = await self.get_messages()
         await self.send(text_data=json.dumps({
-                'type': 'chat_history',
-                'messages': messages
-            }))
+            'type': 'chat_history',
+            'messages': messages
+        }))
 
     async def disconnect(self, close_code):
         if hasattr(self, 'room_group_name'):
@@ -69,42 +75,47 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     # --- DATABASE METHODS ---
 
+    # Update your database methods to use self.url_room_name
     @database_sync_to_async
     def get_messages(self):
-        # Fetch the last 50 messages for this room
-        # We use list() to evaluate the queryset inside this sync method
-        messages = Message.objects.filter(room_name=self.room_name).order_by('-timestamp').values('content', 'sender_id', 'timestamp')[:50]
-        formatted_messages = []
-        for msg in reversed(messages):
-            formatted_messages.append({
-                'message': msg['content'], # Note the dict access ['content']
-                'sender_id': msg['sender_id'],
-                'timestamp': msg['timestamp'].isoformat()
-            })
-    
-        return formatted_messages
+        
+        # 1. Get the QuerySet
+        messages = Message.objects.filter(
+            room_name=self.url_room_name
+        ).order_by('-timestamp')[:50]
+
+        # 2. Use the Serializer (Pass many=True because it's a list)
+        serializer = MessageSerializer(reversed(messages), many=True)
+
+        # 3. Return the data
+        return serializer.data
 
     @database_sync_to_async
     def save_message(self, content):
         return Message.objects.create(
             sender_id=self.user_id,
-            room_name=self.room_name,
+            room_name=self.url_room_name,
             content=content
         )
     
 # Hustlr-websockets/consumers.py
 
+import logging
+logger = logging.getLogger(__name__)
+
 class NotificationConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.user_id = self.scope.get("user_id")
+        logger.info(f"--- CONSUMER: Connection Attempt. User ID: {self.user_id} ---")
+        
         if not self.user_id:
-            print('jabbaaarrrrrrrrrrrrrrrrrrr-----------------------------')
+            logger.warning("--- CONSUMER: Connection Refused. No User ID found in scope. ---")
             await self.close()
             return
 
         # Group name unique to this user
-        self.notification_group = f"user_notifications_5"
-        print(f"---------DEBUG---------: Consumer connected. Group Name: '{self.notification_group}'") # Check for spaces!
+        self.notification_group = f"user_notifications_{self.user_id}"
+        logger.info(f"--- CONSUMER: Connection Accepted. Group Name: '{self.notification_group}' ---")
 
         await self.channel_layer.group_add(
             self.notification_group,
@@ -121,5 +132,6 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
     # This method is called when the BACKEND sends a "type": "send_notification"
     async def send_notification(self, event):
+        logger.info(f"--- CONSUMER: Received send_notification event: {event} ---")
         # Send the payload to the worker's browser
         await self.send(text_data=json.dumps(event["payload"]))
