@@ -83,6 +83,22 @@ services:
     depends_on:
       - db
       - redis
+
+  ai-service:
+    build: ./Hustlr-AI
+    container_name: hustlr_ai
+    restart: always
+    volumes:
+      - ./Hustlr-AI:/app  # Add this for instant code updates!
+    # ports:
+    #   - "8002:8002"
+    env_file:
+      - ./Hustlr-backend/.env
+    environment:
+      - DB_HOST=db  # Keep this consistent with your backend
+    depends_on:
+      - db
+  
   
   nginx:
     image: nginx:alpine
@@ -95,6 +111,7 @@ services:
     depends_on:
       - backend
       - chat-service
+      - ai-service
 
 volumes:
   postgres_data:

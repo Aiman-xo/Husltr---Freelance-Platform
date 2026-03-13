@@ -5,10 +5,11 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from .models import EmployerProfile,JobRequest,Notification
-from rest_framework.parsers import MultiPartParser, FormParser
+from .models import EmployerProfile,JobRequest,Notification, JobMaterials
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .serializers import EmployerProfileSerializer,JobRequestSerializer,JobRequestHandleSerializer,ChatContactSerializer
 from .permissions import IsEmployer
+from workerapp.permissions import IsWorker
 
 from django.db.models import Q,Max
 from rest_framework.pagination import PageNumberPagination
@@ -132,10 +133,11 @@ class JobRequestHandleView(APIView):
         ).select_related('worker__user').order_by('-created_at')
 
         if status_filter:
-            queryset = queryset.filter(status=status_filter)
+            status_list = status_filter.split(',')
+            queryset = queryset.filter(status__in=status_list)
 
         paginator = PageNumberPagination()
-        paginator.page_size = 5  # Or whatever size you prefer
+        paginator.page_size = 10  # Increase for better dashboard view
         
         # Paginate the queryset
         result_page = paginator.paginate_queryset(queryset, request)
@@ -150,19 +152,81 @@ class JobRequestHandleView(APIView):
 
 class JobRequestInduvidualHandleView(APIView):
     permission_classes=[IsAuthenticated,IsEmployer]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    
+    def get(self, request, jobRequestId):
+        try:
+            employer_profile_id = request.user.profile.employer_profile.id
+            job_req = JobRequest.objects.select_related('worker__user', 'employer__user').get(
+                pk=jobRequestId, 
+                employer_id=employer_profile_id
+            )
+            serializer = JobRequestHandleSerializer(job_req, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except JobRequest.DoesNotExist:
+            return Response({'error': 'Job request not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
     def post(self,request,jobRequestId):
         try:
             employer_profile_id = request.user.profile.employer_profile.id
         except Exception as e:
             return Response({'error':f'{e}'})
         
+        action = request.data.get('action', 'cancel')
+        
         try:
             with transaction.atomic():
                 job_request = JobRequest.objects.get(pk=jobRequestId,employer_id = employer_profile_id)
-                if job_request.status != 'pending':
-                    return Response({'error': f'Cannot cancel a request that is already {job_request.status}'}, status=400)
-                job_request.status = 'cancelled'
+                
+                if action == 'cancel':
+                    if job_request.status != 'pending':
+                        return Response({'error': f'Cannot cancel a request that is already {job_request.status}'}, status=400)
+                    job_request.status = 'cancelled'
+                    message = 'Request cancelled successfully'
+                elif action == 'accept_start':
+                    if job_request.status != 'starting':
+                        return Response({'error': f'Cannot accept start for a job that is {job_request.status}'}, status=400)
+                    
+                    from django.utils import timezone
+                    job_request.status = 'in_progress'
+                    job_request.start_time = timezone.now()
+                    job_request.is_timer_active = True
+                    message = 'Job started successfully'
+                else:
+                    return Response({'error': f'Invalid action: {action}'}, status=400)
+                
                 job_request.save()
+                
+                # Fetch fresh data to ensure all related fields are present
+                serializer = JobRequestHandleSerializer(job_request)
+                response_data = serializer.data
+                response_data['message'] = message # Attach message to the data
+
+            # --- REAL-TIME NOTIFICATION START ---
+            try:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+                if action == 'accept_start':
+                    worker_user_id = job_request.worker.user.user.id
+                    channel_layer = get_channel_layer()
+                    async_to_sync(channel_layer.group_send)(
+                        f"user_notifications_{worker_user_id}",
+                        {
+                            "type": "send_notification",
+                            "payload": {
+                                "type": "JOB_IN_PROGRESS",
+                                "job_id": job_request.id,
+                                "new_status": job_request.status,
+                                "start_time": job_request.start_time.isoformat(),
+                                "message": message
+                            }
+                        }
+                    )
+            except Exception as e:
+                print(f"Failed to send websocket notification: {e}")
+            # --- REAL-TIME NOTIFICATION END ---
 
             # --- CACHE CLEARING START ---
             # 1. Clear Employer side (all pages/statuses)
@@ -185,7 +249,7 @@ class JobRequestInduvidualHandleView(APIView):
                 cache.delete(f'worker_inbox_{job_request.worker_id}') 
             # --- CACHE CLEARING END ---
 
-            return Response({'message': 'Request cancelled successfully'}, status=status.HTTP_200_OK)
+            return Response(response_data, status=status.HTTP_200_OK)
 
         except JobRequest.DoesNotExist:
             return Response({'error': 'Job request not found or unauthorized'}, status=status.HTTP_404_NOT_FOUND)
@@ -225,3 +289,47 @@ class ChatListView(APIView):
         )
         
         return Response(serializer.data,status=status.HTTP_200_OK)
+
+class MaterialToggleView(APIView):
+    permission_classes = [IsAuthenticated, IsEmployer]
+    
+    def post(self, request, materialId):
+        try:
+            employer_profile = request.user.profile.employer_profile
+            material = JobMaterials.objects.get(id=materialId, job__employer=employer_profile)
+            
+            material.is_available_at_site = not material.is_available_at_site
+            material.save()
+            
+            # Notify the Worker
+            try:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+                worker_user_id = material.job.worker.user.user.id
+                channel_layer = get_channel_layer()
+                async_to_sync(channel_layer.group_send)(
+                    f"user_notifications_{worker_user_id}",
+                    {
+                        "type": "send_notification",
+                        "payload": {
+                            "type": "MATERIAL_TOGGLE",
+                            "job_id": material.job.id,
+                            "material_id": material.id,
+                            "is_available_at_site": material.is_available_at_site,
+                            "message": f"Material '{material.item_description}' status updated by employer."
+                        }
+                    }
+                )
+            except Exception as e:
+                print(f"Failed to send material toggle notification: {e}")
+
+            return Response({
+                'id': material.id,
+                'message': 'Material status updated',
+                'is_available_at_site': material.is_available_at_site
+            }, status=status.HTTP_200_OK)
+            
+        except JobMaterials.DoesNotExist:
+            return Response({'error': 'Material not found or unauthorized'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)

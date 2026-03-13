@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+faiss-cpu
+langchain
+langchain-core
+langchain-community
+langchain-google-genai
+python-dotenv
+numpy
+black
+isort
+flake8

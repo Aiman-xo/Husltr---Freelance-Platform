@@ -6,7 +6,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 import logging
 
@@ -183,18 +183,17 @@ class GetActiveJobs(APIView):
 
 
 class HandleJobRequestView(APIView):
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     def post(self, request, jobRequestId):
         # 1. Get the action from the frontend (expecting 'accept' or 'reject')
         action = request.data.get('action')
         
-        if action not in ['accept', 'reject']:
-            return Response({'error': 'Invalid action'}, status=status.HTTP_400_BAD_REQUEST)
-
+        if action not in ['accept', 'reject', 'start', 'finish']:
+            return Response({'error': f'Invalid action: {action}'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            # 2. Secure lookup: Must be 'pending' AND current user must be the Worker
+            # Secure lookup: Current user must be the assigned Worker
             job_req = JobRequest.objects.get(
                 pk=jobRequestId, 
-                status='pending',
                 worker__user__user=request.user 
             )
         except JobRequest.DoesNotExist:
@@ -208,11 +207,91 @@ class HandleJobRequestView(APIView):
             job_req.status = 'accepted'
             job_req.contract_hourly_rate = job_req.worker.hourly_rate
             message = "Job accepted and rate locked."
-        else:
+        elif action == 'reject':
             job_req.status = 'rejected'
             message = "Job rejected."
+        elif action == 'start':
+            if job_req.status != 'accepted':
+                return Response({'error': 'You can only start an accepted job.'}, status=400)
+            job_req.status = 'starting'
+            message = "Job start requested. Waiting for employer acceptance."
+        elif action == 'finish':
+            if job_req.status != 'in_progress':
+                return Response({'error': 'You can only finish a job that is in progress.'}, status=400)
+            
+            from django.utils import timezone
+            from decimal import Decimal
+            
+            job_req.status = 'completed'
+            job_req.end_time = timezone.now()
+            job_req.is_timer_active = False
+            
+            # Billing Calculation
+            duration = job_req.end_time - job_req.start_time
+            total_seconds = Decimal(duration.total_seconds())
+            hours = total_seconds / Decimal(3600)
+            
+            base_pay = Decimal(job_req.worker.base_Pay or 0)
+            hourly_rate = Decimal(job_req.contract_hourly_rate or job_req.worker.hourly_rate or 0)
 
+            # Logic: Always give base_pay. After 1 hour, add hourly_rate for extra time.
+            if hours <= 1:
+                labor_amount = base_pay
+            else:
+                labor_amount = base_pay + (hours - 1) * hourly_rate
+            
+            from employerapp.models import JobBilling
+            billing, created = JobBilling.objects.get_or_create(job=job_req)
+            billing.labor_amount = labor_amount
+            material_amount = Decimal(request.data.get('material_amount', 0))
+            billing.material_amount = material_amount
+            billing.total_amount = labor_amount + material_amount
+            
+            # Handle Bill Image upload
+            bill_image = request.FILES.get('bill_image')
+            if bill_image:
+                billing.bill_image = bill_image
+                
+            billing.save()
+            
+            message = "Job completed and billing calculated."
+        
         job_req.save()
+        
+        # Fresh data for the frontend
+        serializer = WorkerActiveJobSerializer(job_req, context={'request': request})
+        response_data = serializer.data
+        response_data['message'] = message
+
+        # --- REAL-TIME NOTIFICATION START ---
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+            channel_layer = get_channel_layer()
+            
+            # Notify the Employer
+            employer_user_id = job_req.employer.user.user.id
+            payload_type = f"JOB_{action.upper()}"
+            if action == 'start': payload_type = "JOB_STARTING"
+            if action == 'finish': payload_type = "JOB_COMPLETED"
+            
+            async_to_sync(channel_layer.group_send)(
+                f"user_notifications_{employer_user_id}",
+                {
+                    "type": "send_notification",
+                    "payload": {
+                        "type": payload_type,
+                        "title": "Job Update" if action != 'start' else "Start Request!",
+                        "job_id": job_req.id,
+                        "new_status": job_req.status,
+                        "message": message,
+                        "timestamp": timezone.now().isoformat() if action == 'finish' else job_req.created_at.isoformat()
+                    }
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to send websocket notification: {e}")
+        # --- REAL-TIME NOTIFICATION END ---
 
         # --- CACHE INVALIDATION LOGIC START ---
         try:
@@ -240,7 +319,7 @@ class HandleJobRequestView(APIView):
             logger.error(f"Failed to clear cache: {e}")
         # --- CACHE INVALIDATION LOGIC END ---
 
-        return Response({'message': message, 'new_status': job_req.status}, status=status.HTTP_200_OK)
+        return Response(response_data, status=status.HTTP_200_OK)
     
     def patch(self, request, jobRequestId):
         try:

@@ -1,9 +1,14 @@
-from .models import EmployerProfile,JobRequest,Notification
+from .models import EmployerProfile,JobRequest,Notification,JobBilling
 from rest_framework.serializers import ModelSerializer
 from rest_framework import serializers
 import jwt
 from datetime import datetime, timedelta
 from django.conf import settings
+
+class JobBillingSerializer(ModelSerializer):
+    class Meta:
+        model = JobBilling
+        fields = '__all__'
 
 class EmployerProfileSerializer(ModelSerializer):
     class Meta:
@@ -15,7 +20,7 @@ class JobRequestSerializer(ModelSerializer):
     employer_name = serializers.CharField(source = 'employer.company_name',read_only= True)
     class Meta:
         model = JobRequest
-        fields =['id','employer','worker','description','city','project_image','status','created_at','employer_profile_image','employer_name']
+        fields = ['id', 'employer', 'worker', 'description', 'city', 'project_image', 'status', 'created_at', 'employer_profile_image', 'employer_name', 'start_time', 'end_time', 'is_timer_active', 'contract_hourly_rate']
         extra_kwargs = {
             'employer': {'read_only': True}
         }
@@ -24,12 +29,16 @@ class JobRequestSerializer(ModelSerializer):
 class JobRequestHandleSerializer(ModelSerializer):
     worker_profile_image = serializers.ImageField(source = 'worker.user.image',read_only=True)
     worker_name = serializers.CharField(source = 'worker.user.username',read_only=True)
+    employer_profile_image = serializers.ImageField(source='employer.user.image', read_only=True)
+    employer_name = serializers.CharField(source='employer.company_name', read_only=True)
     base_pay = serializers.IntegerField(source = 'worker.base_Pay',read_only=True)
     hourly_rate = serializers.IntegerField(source = 'worker.hourly_rate',read_only=True)
+    billing_info = JobBillingSerializer(read_only=True)
     class Meta:
         model = JobRequest
-        fields =['id','employer','worker','worker_profile_image','worker_name',
-                 'base_pay','hourly_rate','description','city','project_image','status','created_at']
+        fields = ['id', 'employer', 'worker', 'worker_profile_image', 'worker_name', 'employer_profile_image', 'employer_name',
+                  'base_pay', 'hourly_rate', 'description', 'city', 'project_image', 'status', 'created_at',
+                  'start_time', 'end_time', 'is_timer_active', 'contract_hourly_rate','estimated_hours', 'billing_info']
         extra_kwargs = {
             'employer': {'read_only': True}
         }

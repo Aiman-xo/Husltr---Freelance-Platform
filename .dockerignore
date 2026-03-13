@@ -1,6 +1,11 @@
 *.pyc
 __pycache__
-.env
+.venv/
+hustlrenv/
+node_modules/
+.vscode/
+.idea/
+*.log
 db.sqlite3
 .git
 venv/
