@@ -1,5 +1,7 @@
 from django.urls import path
-from .views import WorkerProfileSetupView,SkillView,WorkerListView,JobInboxView,HandleJobRequestView,GetActiveJobs,GetNotificationView,JobMaterialsView,SeeJobMaterialsView
+from .views import WorkerProfileSetupView,SkillView,WorkerListView,JobInboxView,HandleJobRequestView,GetActiveJobs,GetNotificationView,JobMaterialsView,SeeJobMaterialsView,GetJobPosts,\
+SendingInterestedRequestView
+
 
 urlpatterns = [
     path("worker-setup/", WorkerProfileSetupView.as_view(), name="worker-setup"),
@@ -10,7 +12,9 @@ urlpatterns = [
     path('see-notification/',GetNotificationView.as_view(),name='see-notification'),
     path('active-jobs/',GetActiveJobs.as_view(),name='active-jobs'),
     path('job-materials/',JobMaterialsView.as_view(),name='job-materials'),
+    path('fetch-job-posts/',GetJobPosts.as_view(),name='get-job-posts'),
     path('see-job-materials/<int:job_id>/',SeeJobMaterialsView.as_view(),name='see-job-materials'),
+    path('sending-interest/<int:job_id>/',SendingInterestedRequestView.as_view(),name='sending-interest'),
 
 
 ]

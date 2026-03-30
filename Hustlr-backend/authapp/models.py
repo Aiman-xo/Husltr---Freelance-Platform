@@ -33,6 +33,7 @@ class Profile(models.Model):
         max_length=20, choices=ROLE_CHOICES, default="worker"
     )
     city = models.CharField(max_length=100)
+    fcm_token = models.TextField(null=True, blank=True)
     phone_number = models.CharField(max_length=10)
 
     def __str__(self):

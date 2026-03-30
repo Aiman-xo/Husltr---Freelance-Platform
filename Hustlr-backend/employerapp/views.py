@@ -5,9 +5,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from .models import EmployerProfile,JobRequest,Notification, JobMaterials
+from .models import EmployerProfile,JobRequest,Notification, JobMaterials,JobPost
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from .serializers import EmployerProfileSerializer,JobRequestSerializer,JobRequestHandleSerializer,ChatContactSerializer
+from .serializers import EmployerProfileSerializer,JobRequestSerializer,JobRequestHandleSerializer,ChatContactSerializer,JobPostSerializer
 from .permissions import IsEmployer
 from workerapp.permissions import IsWorker
 
@@ -16,6 +16,10 @@ from rest_framework.pagination import PageNumberPagination
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+
+from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
+
 
 
 # Create your views here.
@@ -208,9 +212,10 @@ class JobRequestInduvidualHandleView(APIView):
             try:
                 from channels.layers import get_channel_layer
                 from asgiref.sync import async_to_sync
+                channel_layer = get_channel_layer()
+                
                 if action == 'accept_start':
                     worker_user_id = job_request.worker.user.user.id
-                    channel_layer = get_channel_layer()
                     async_to_sync(channel_layer.group_send)(
                         f"user_notifications_{worker_user_id}",
                         {
@@ -221,6 +226,20 @@ class JobRequestInduvidualHandleView(APIView):
                                 "new_status": job_request.status,
                                 "start_time": job_request.start_time.isoformat(),
                                 "message": message
+                            }
+                        }
+                    )
+                elif action == 'cancel':
+                    worker_user_id = job_request.worker.user.user.id
+                    async_to_sync(channel_layer.group_send)(
+                        f"user_notifications_{worker_user_id}",
+                        {
+                            "type": "send_notification",
+                            "payload": {
+                                "type": "JOB_CANCELLED",
+                                "job_id": job_request.id,
+                                "new_status": job_request.status,
+                                "message": f"Job Request for {job_request.city} has been cancelled by the employer."
                             }
                         }
                     )
@@ -255,6 +274,83 @@ class JobRequestInduvidualHandleView(APIView):
             return Response({'error': 'Job request not found or unauthorized'}, status=status.HTTP_404_NOT_FOUND)
         except AttributeError:
             return Response({'error': 'Employer profile not found'}, status=status.HTTP_400_BAD_REQUEST)
+        
+
+
+
+class EmployerHandleRequestView(APIView):
+    permission_classes = [IsAuthenticated, IsEmployer]
+
+    def get(self, request):
+        try:
+            employer_profile = request.user.profile.employer_profile
+            # Only get requests that were initiated by workers (job_post is not null)
+            # and are still pending.
+            interests = JobRequest.objects.filter(
+                employer=employer_profile,
+                job_post__isnull=False,
+                status='pending'
+            ).select_related('worker__user').order_by('-created_at')
+
+            serializer = JobRequestHandleSerializer(interests, many=True)
+            return Response({'results': serializer.data}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def patch(self, request, request_id):
+        # Action should be 'accepted' or 'rejected' sent from frontend
+        action = request.data.get('status') 
+        
+        if action not in ['accepted', 'rejected']:
+            return Response({'error': 'Invalid status. Use "accepted" or "rejected".'}, 
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # 1. Ensure this request belongs to the logged-in employer
+            employer_profile = request.user.profile.employer_profile
+            job_request = JobRequest.objects.get(id=request_id, employer=employer_profile)
+
+            # 2. Update the status
+            job_request.status = action
+            job_request.save()
+
+            # --- REAL-TIME NOTIFICATION ---
+            try:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+                channel_layer = get_channel_layer()
+                worker_user_id = job_request.worker.user.user.id
+                async_to_sync(channel_layer.group_send)(
+                    f"user_notifications_{worker_user_id}",
+                    {
+                        "type": "send_notification",
+                        "payload": {
+                            "type": "INTEREST_UPDATE",
+                            "job_id": job_request.id,
+                            "new_status": action,
+                            "message": f"Your interest for job in {job_request.city} has been {action}."
+                        }
+                    }
+                )
+            except Exception as e:
+                print(f"Failed to send interest update notification: {e}")
+
+            # 3. CRITICAL: Clear the Worker's Redis cache!
+            # Since the worker's inbox relies on Redis, we must delete it so they see the change.
+            cache_key = f"worker_inbox_{job_request.worker.id}"
+            cache.delete(cache_key)
+
+            return Response({
+                'message': f'Request has been {action}.',
+                'current_status': job_request.status
+            }, status=status.HTTP_200_OK)
+
+        except JobRequest.DoesNotExist:
+            return Response({'error': 'Job request not found or you do not have permission.'}, 
+                            status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 ACTIVE_WORK_STATUSES = ['accepted', 'starting', 'in_progress', 'completed']
 class ChatListView(APIView):
@@ -303,8 +399,7 @@ class MaterialToggleView(APIView):
             
             # Notify the Worker
             try:
-                from channels.layers import get_channel_layer
-                from asgiref.sync import async_to_sync
+                
                 worker_user_id = material.job.worker.user.user.id
                 channel_layer = get_channel_layer()
                 async_to_sync(channel_layer.group_send)(
@@ -333,3 +428,62 @@ class MaterialToggleView(APIView):
             return Response({'error': 'Material not found or unauthorized'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        
+@swagger_auto_schema(
+    request_body=JobPostSerializer,
+    responses={
+        201: openapi.Response(
+            "Job Post Successful",
+            schema=openapi.Schema(
+                type=openapi.TYPE_OBJECT,
+                properties={
+                    "message": openapi.Schema(type=openapi.TYPE_STRING),
+                    "data": openapi.Schema(type=openapi.TYPE_OBJECT),
+                },
+            ),
+        ),
+        400: "Bad Request (validation error)",
+        500: "Internal server error",
+    },
+)
+class JobPostView(APIView):
+    permission_classes=[IsAuthenticated,IsEmployer]
+    def post(self,request):
+        try:
+            employer_profile = request.user.profile.employer_profile
+        except AttributeError:
+            return Response({'error': 'Employer profile not found.'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = JobPostSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(employer=employer_profile)
+            return Response({'message':'Job Posted Successfully','data':serializer.data},status=status.HTTP_201_CREATED)
+        
+        return Response(serializer.errors,status=status.HTTP_400_BAD_REQUEST)
+    
+    def get(self,request):
+        try:
+            employer_profile = request.user.profile.employer_profile
+            jobs_posted = JobPost.objects.filter(employer=employer_profile).select_related('employer').prefetch_related('required_skills').all()
+
+            serializer = JobPostSerializer(jobs_posted,many=True)
+            return Response({'message':'fetched jobs!','result':serializer.data},status=status.HTTP_200_OK)
+        except AttributeError:
+            return Response({'error': 'Employer profile not found.'}, status=status.HTTP_404_NOT_FOUND)
+    
+class JobPostHandleDelete(APIView):
+    permission_classes=[IsAuthenticated,IsEmployer]
+    def delete(self,request,post_id):
+        try:
+            employer_profile = request.user.profile.employer_profile
+            deleted_count, _ =JobPost.objects.filter(employer=employer_profile,id=post_id).delete()
+            if deleted_count == 0:
+                return Response(
+                {'error': 'Post not found or you do not have permission to delete it.'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+            return Response({'message':'post deleted successfully'},status=status.HTTP_200_OK)
+        except AttributeError:
+            return Response({'error':'could delete the post'},status=status.HTTP_404_NOT_FOUND)
+
+
+    

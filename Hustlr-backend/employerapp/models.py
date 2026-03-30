@@ -1,7 +1,7 @@
 from django.db import models
 from authapp.models import Profile,HustlrUsers
 from workerapp.models import WorkerProfile
-
+from workerapp.models import Skill
 from cloudinary_storage.storage import MediaCloudinaryStorage
 
 # Create your models here.
@@ -26,6 +26,9 @@ class JobRequest(models.Model):
 
     employer = models.ForeignKey(EmployerProfile, on_delete=models.CASCADE, related_name='sent_hiring_requests')
     worker = models.ForeignKey(WorkerProfile, on_delete=models.CASCADE, related_name='received_job_offers')
+
+    # used to identify the worker job interesets on a job post.
+    job_post = models.ForeignKey('JobPost', on_delete=models.SET_NULL, null=True, blank=True, related_name='applications')
     
     description = models.TextField()
     city = models.CharField(max_length=255)
@@ -42,8 +45,15 @@ class JobRequest(models.Model):
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
     is_timer_active = models.BooleanField(default=False)
+
+    expiry_notification_sent = models.BooleanField(default=False)
     
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes =[
+            models.Index(fields=['created_at','status'])
+        ]
 
     def __clash_prevention__(self):
         # Prevent employer from requesting themselves
@@ -52,6 +62,13 @@ class JobRequest(models.Model):
     def __str__(self):
         return self.description
 
+class JobPost(models.Model):
+    employer = models.ForeignKey(EmployerProfile, on_delete=models.CASCADE, related_name='sent_hiring_posts')
+    title = models.CharField(max_length=200)
+    description = models.TextField()
+    city = models.CharField(max_length=100)
+    required_skills = models.ManyToManyField(Skill, related_name='job_posts',blank=True)  
+    job_image = models.ImageField(upload_to='job_posts/',storage=MediaCloudinaryStorage(),null=True,blank=True)
 
 class JobMaterials(models.Model):
     job = models.ForeignKey(JobRequest, on_delete=models.CASCADE, related_name='materials')

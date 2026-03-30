@@ -13,8 +13,8 @@ import logging
 from .permissions import IsWorker
 from .models import WorkerProfile,Skill
 from .serializers import WorkerProfileReadSerializer,SkillSerializer,WorkerProfileWriteSerializer,WorkerActiveJobSerializer,JobMaterialSerializer
-from employerapp.serializers import JobRequestSerializer,NotificationSerializer
-from employerapp.models import JobRequest,Notification,JobMaterials
+from employerapp.serializers import JobRequestSerializer,NotificationSerializer,JobPostSerializer
+from employerapp.models import JobRequest,Notification,JobMaterials,JobPost
 from employerapp.permissions import IsEmployer
 
 # Create your views here.
@@ -55,8 +55,29 @@ class WorkerProfileSetupView(APIView):
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
-class SkillView(APIView):
+class GetJobPosts(APIView):
     permission_classes=[IsAuthenticated,IsWorker]
+    def get(self,request):
+        try:
+            worker_profile = request.user.profile.worker_profile
+        except AttributeError:
+            return Response({'error': 'Worker profile not found.'}, status=400)
+
+        jobs = JobPost.objects.select_related('employer__user').all().order_by('-id')
+        
+        from employerapp.models import JobRequest
+        interested_job_ids = set(JobRequest.objects.filter(worker=worker_profile).values_list('job_post_id', flat=True))
+        
+        serializer = JobPostSerializer(jobs,many=True)
+        data = serializer.data
+        
+        for post in data:
+            post['already_interested'] = post['id'] in interested_job_ids
+        
+        return Response(data,status=status.HTTP_200_OK)
+    
+class SkillView(APIView):
+    permission_classes=[IsAuthenticated, IsWorker | IsEmployer]
     def get(self, request):
         query = request.query_params.get('search', '')
 
@@ -146,7 +167,7 @@ class JobInboxView(APIView):
 
         try:
             # If not in Redis, go to the Database
-            active_statuses = ['pending', 'accepted', 'rejected']
+            active_statuses = ['pending', 'accepted', 'rejected', 'cancelled']
             requests = request.user.profile.worker_profile.received_job_offers.filter(
                 status__in=active_statuses
             ).order_by('-created_at') # Always good to show newest first!
@@ -335,6 +356,33 @@ class HandleJobRequestView(APIView):
             job.save()
             return Response({"message": "Estimate updated", "estimated_hours": job.estimated_hours})
         return Response({"error": "Invalid estimate"}, status=400)
+    
+
+class SendingInterestedRequestView(APIView):
+    def post(self,request,job_id):
+        worker_profile = request.user.profile.worker_profile
+        try:
+            job = JobPost.objects.get(id=job_id)
+        
+        
+            if JobRequest.objects.filter(job_post=job,worker=worker_profile).exists():
+                return Response({'error':'you have send an interest reuqest for this post once'},status=status.HTTP_400_BAD_REQUEST)
+            
+            job_request = JobRequest.objects.create(
+                job_post =job,
+                worker=worker_profile,
+                employer=job.employer,
+                description=job.description,
+                city=job.city,
+                project_image=job.job_image,
+                status='pending'
+            )
+
+            return Response({'message': 'Interest sent successfully!'}, status=status.HTTP_201_CREATED)
+        except JobPost.DoesNotExist:
+            return Response({'error':'couldnt find this job post'},status=status.HTTP_404_NOT_FOUND)
+        except AttributeError:
+            return Response({'error':'worker profile not found'},status=status.HTTP_400_BAD_REQUEST)
     
 
 class GetNotificationView(APIView):

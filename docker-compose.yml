@@ -18,6 +18,16 @@ services:
     image: redis:7-alpine
     restart: always
 
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq_container
+    restart: always
+    ports:
+      - "15672:15672" # Management UI (Login: guest/guest)
+    # We don't expose 5672 to the world, only to our containers
+    networks:
+      - default
+
   # 3. Your Django API
   backend:
     build: ./Hustlr-backend
@@ -98,6 +108,31 @@ services:
       - DB_HOST=db  # Keep this consistent with your backend
     depends_on:
       - db
+      - rabbitmq
+  
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: hustlr_n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    environment:
+      # set up configuration like use which host, which type of database etc...
+      - N8N_HOST=localhost
+      - NODE_ENV=production
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=db
+      - DB_POSTGRESDB_PORT=5432
+      # Use the variables from your existing .env file
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB} 
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    env_file:
+      - ./Hustlr-backend/.env
+    depends_on:
+      - db
   
   
   nginx:
@@ -115,3 +150,4 @@ services:
 
 volumes:
   postgres_data:
+  n8n_data:

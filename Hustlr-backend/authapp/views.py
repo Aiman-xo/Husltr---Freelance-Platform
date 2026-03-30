@@ -23,7 +23,9 @@ from .serializers import (
     ResetPasswordSerializer,
     VerifyOTPSerializer,
 )
-
+from .publisher import publish_user_details
+import logging
+logger = logging.getLogger(__name__)
 # Create your views here.
 
 
@@ -132,6 +134,13 @@ class LoginView(APIView):
             token["date_joined"] = str(user.date_joined)
             refresh_token = str(token)
             access_token = str(token.access_token)
+            
+            try:
+                print(f"DEBUG LOGIN: Triggering RabbitMQ for User {user.id} ({user.profile.active_role})", flush=True)
+                publish_user_details(user.id, user.profile.active_role)
+            except Exception as e:
+                logger.error(f"Post-login publisher failed: {e}")
+
         except AttributeError:
             return Response(
                 {"message": "User has no profile assigned"},
@@ -142,6 +151,7 @@ class LoginView(APIView):
                 {"message": "Token generation failed"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+        
 
         response = Response(
             {
@@ -418,3 +428,30 @@ class UserListView(APIView):
         serializer = ProfileSetupSerializer(profiles, many=True)
 
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+class InternalUserInfoView(APIView):
+    permission_classes = [IsAuthenticated] 
+    def get(self, request):
+        user_role = "employer" if hasattr(request.user, 'employer_profile') else "worker"
+        
+        return Response({
+            "user_id": request.user.id,
+            "role": user_role,
+            "username": request.user.username
+        })
+    
+class UpdateOrCreateFCMToken(APIView):
+    permission_classes=[IsAuthenticated]
+    def post(self,request):
+        fcm_token = request.data.get('fcm_token')
+        if not fcm_token:
+            return Response({'error':'there is no fcm_token provided!'},status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            profile = request.user.profile
+            profile.fcm_token = fcm_token
+            profile.save()
+            return Response({'message':'succesfully acquired the token'},status=status.HTTP_200_OK)
+        
+        except AttributeError:
+            return Response({"message": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)

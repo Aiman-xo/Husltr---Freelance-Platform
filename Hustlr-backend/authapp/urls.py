@@ -1,6 +1,7 @@
 from unicodedata import name
 from django.urls import path
-from .views import UserCreateView,LoginView,CookieRefreshView,GenerateOTPView,VerifyOTPView,ResetPasswordView,GoogleOAuthView,LogoutView,ProfileSetupView,UserListView
+from .views import UserCreateView,LoginView,CookieRefreshView,GenerateOTPView,VerifyOTPView,ResetPasswordView,GoogleOAuthView,LogoutView,ProfileSetupView,UserListView,\
+InternalUserInfoView,UpdateOrCreateFCMToken
 
 urlpatterns = [
     path('register/',UserCreateView.as_view(),name='user-create'),
@@ -12,5 +13,7 @@ urlpatterns = [
     path('google/auth/',GoogleOAuthView.as_view(),name='google-auth'),
     path('profile-setup/',ProfileSetupView.as_view(),name='profile-setup'),
     path('all-users/',UserListView.as_view(),name='all-users'),
+    path('internal-verify/', InternalUserInfoView.as_view(), name='internal_verify'),
+    path('update-fcm_token/', UpdateOrCreateFCMToken.as_view(), name='update-or-create-fcm'),
     path('logout/',LogoutView.as_view(),name='logout'),
 ]

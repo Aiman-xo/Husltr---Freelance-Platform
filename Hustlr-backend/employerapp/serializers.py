@@ -1,4 +1,4 @@
-from .models import EmployerProfile,JobRequest,Notification,JobBilling
+from .models import EmployerProfile,JobRequest,Notification,JobBilling,JobPost
 from rest_framework.serializers import ModelSerializer
 from rest_framework import serializers
 import jwt
@@ -24,6 +24,14 @@ class JobRequestSerializer(ModelSerializer):
         extra_kwargs = {
             'employer': {'read_only': True}
         }
+
+class JobPostSerializer(ModelSerializer):
+    employer_profile_image = serializers.ImageField(source = 'employer.user.image',read_only= True)
+    employer_name = serializers.CharField(source = 'employer.company_name',read_only= True)
+    class Meta:
+        model=JobPost
+        fields=['id','employer','title','description','city','job_image','required_skills','employer_profile_image','employer_name']
+        read_only_fields = ['employer']
 
 
 class JobRequestHandleSerializer(ModelSerializer):

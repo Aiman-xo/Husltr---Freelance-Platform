@@ -7,8 +7,11 @@ langchain
 langchain-core
 langchain-community
 langchain-google-genai
+langchain-groq
 python-dotenv
+pika
 numpy
 black
 isort
 flake8
+redis

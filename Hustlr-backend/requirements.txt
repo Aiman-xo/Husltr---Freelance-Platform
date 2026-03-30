@@ -29,6 +29,7 @@ dnspython==2.8.0
 drf-yasg==1.21.14
 eventlet==0.40.4
 greenlet==3.3.1
+httpx
 idna==3.11
 inflection==0.5.1
 iniconfig==2.3.0
@@ -37,6 +38,7 @@ jmespath==1.1.0
 kombu==5.6.2
 packaging==26.0
 pillow==12.1.0
+pika
 pluggy==1.6.0
 prompt_toolkit==3.0.52
 psycopg2-binary==2.9.11
