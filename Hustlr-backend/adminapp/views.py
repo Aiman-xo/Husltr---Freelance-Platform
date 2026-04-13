@@ -106,6 +106,7 @@ class AdminGetAllJobs(APIView):
     permission_classes=[IsAuthenticated,IsAdminUser]
     def get(self, request):
         status_filter = request.query_params.get('status', None)
+        search_query = request.query_params.get('search', None)
         jobs = JobRequest.objects.select_related('employer', 'worker').all().order_by('-created_at')
         
         if status_filter:
@@ -118,6 +119,14 @@ class AdminGetAllJobs(APIView):
             elif status_filter == 'cancelled_or_rejected':
                  jobs = jobs.filter(status__in=['rejected', 'cancelled'])
 
+        if search_query:
+            jobs = jobs.filter(
+                Q(description__icontains=search_query) |
+                Q(employer__company_name__icontains=search_query) |
+                Q(worker__user__username__icontains=search_query) |
+                Q(id__icontains=search_query)
+            )
+
         paginator = CustomPagination()
         paginated_jobs = paginator.paginate_queryset(jobs, request)
         serializer = JobAdminSerializer(paginated_jobs, many=True)
@@ -126,9 +135,23 @@ class AdminGetAllJobs(APIView):
 class AdminGetAllFinancials(APIView):
     permission_classes=[IsAuthenticated,IsAdminUser]
     def get(self, request):
+        search_query = request.query_params.get('search', None)
         billings = JobBilling.objects.select_related('job__employer', 'job__worker').all().order_by('-submitted_at')
-        serializer = FinancialAdminSerializer(billings, many=True)
-        return Response({'Message': 'All financial records retrieved', 'result': serializer.data}, status=status.HTTP_200_OK)
+        
+        if search_query:
+            billings = billings.filter(
+                Q(job__employer__company_name__icontains=search_query) |
+                Q(job__worker__user__username__icontains=search_query) |
+                Q(job__id__icontains=search_query)
+            )
+
+        paginator = CustomPagination()
+        paginated_billings = paginator.paginate_queryset(billings, request)
+        serializer = FinancialAdminSerializer(paginated_billings, many=True)
+        
+        response = paginator.get_paginated_response(serializer.data)
+        response.data['Message'] = 'All financial records retrieved'
+        return response
 
 class AdminDashboardStats(APIView):
     permission_classes=[IsAuthenticated,IsAdminUser]
@@ -153,7 +176,9 @@ class AdminDashboardStats(APIView):
                 pending=Count('id', filter=Q(status='pending')),
                 active=Count('id', filter=Q(status__in=['accepted', 'in_progress', 'starting'])),
                 completed=Count('id', filter=Q(status='completed')),
-                cancelled_or_rejected=Count('id', filter=Q(status__in=['rejected', 'cancelled']))
+                cancelled_or_rejected=Count('id', filter=Q(status__in=['rejected', 'cancelled'])),
+                paid_jobs=Count('id', filter=Q(billing_info__is_paid=True)),
+                unpaid_jobs=Count('id', filter=Q(status='completed', billing_info__is_paid=False))
             )
             
             # 3. Job Boards
@@ -161,6 +186,7 @@ class AdminDashboardStats(APIView):
             
             # 4. Financial / Economy
             total_billed = JobBilling.objects.aggregate(total=Sum('total_amount'))['total'] or 0.00
+            total_unpaid = JobBilling.objects.filter(is_paid=False).aggregate(total=Sum('total_amount'))['total'] or 0.00
             
             # 5. Timeseries for Growth Chart (Last 7 days)
             last_7_days = timezone.now() - timedelta(days=7)
@@ -187,10 +213,13 @@ class AdminDashboardStats(APIView):
                     'active': job_stats['active'],
                     'completed': job_stats['completed'],
                     'cancelled_or_rejected': job_stats['cancelled_or_rejected'],
+                    'paid_jobs': job_stats['paid_jobs'],
+                    'unpaid_jobs': job_stats['unpaid_jobs'],
                     'total_job_posts': total_job_posts
                 },
                 'financials': {
-                    'total_platform_billing': float(total_billed)
+                    'total_platform_billing': float(total_billed),
+                    'total_unpaid_amount': float(total_unpaid)
                 },
                 'growth_stats': growth_data
             }

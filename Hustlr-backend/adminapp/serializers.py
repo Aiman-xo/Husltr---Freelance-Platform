@@ -32,10 +32,11 @@ class GetEmployerAdminSerializer(serializers.ModelSerializer):
 class JobAdminSerializer(serializers.ModelSerializer):
     employer_company = serializers.CharField(source='employer.company_name', read_only=True)
     worker_name = serializers.CharField(source='worker.user.username', read_only=True)
+    is_paid = serializers.BooleanField(source='billing_info.is_paid', read_only=True, default=False)
     
     class Meta:
         model = JobRequest
-        fields = ['id', 'description', 'employer_company', 'worker_name', 'status', 'created_at', 'contract_hourly_rate']
+        fields = ['id', 'description', 'employer_company', 'worker_name', 'status', 'created_at', 'contract_hourly_rate', 'is_paid']
 
 class FinancialAdminSerializer(serializers.ModelSerializer):
     job_id = serializers.IntegerField(source='job.id', read_only=True)
@@ -45,4 +46,4 @@ class FinancialAdminSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = JobBilling
-        fields = ['id', 'job_id', 'employer_name', 'worker_name', 'total_amount', 'submitted_at', 'status']
+        fields = ['id', 'job_id', 'employer_name', 'worker_name', 'total_amount', 'submitted_at', 'status', 'is_paid']
