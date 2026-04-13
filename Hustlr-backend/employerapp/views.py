@@ -5,9 +5,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from .models import EmployerProfile,JobRequest,Notification, JobMaterials,JobPost
+from .models import EmployerProfile,JobRequest,Notification, JobMaterials,JobPost,JobBilling
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from .serializers import EmployerProfileSerializer,JobRequestSerializer,JobRequestHandleSerializer,ChatContactSerializer,JobPostSerializer
+from .serializers import EmployerProfileSerializer,JobRequestSerializer,JobRequestHandleSerializer,ChatContactSerializer,JobPostSerializer,JobBillingSerializer
 from .permissions import IsEmployer
 from workerapp.permissions import IsWorker
 
@@ -19,6 +19,12 @@ from channels.layers import get_channel_layer
 
 from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
+
+import razorpay
+from hustlr import settings
+from django.utils import timezone
+
+client = razorpay.Client(auth=(settings.RAZORPAY_API_KEY, settings.RAZORPAY_SECRET_KEY))
 
 
 
@@ -56,7 +62,7 @@ class JobRequestView(APIView):
         except AttributeError:
             return Response({"error": "Only employers can send requests"}, status=status.HTTP_403_FORBIDDEN)
 
-        serializer = JobRequestSerializer(data=request.data)
+        serializer = JobRequestSerializer(data=request.data, context={'request': request})
 
         if serializer.is_valid():
             
@@ -64,17 +70,18 @@ class JobRequestView(APIView):
 
 
             # 2. Get the recipient's User ID
-            # Assuming worker -> profile -> user relationship
+            # worker -> profile -> user relationship
             worker_user = job_request.worker.user.user 
             worker_user_id = worker_user.id
             print('-------VIEW USER ID--------',worker_user_id)
 
             truncated_desc = (job_request.description[:30] + '..') if len(job_request.description) > 30 else job_request.description
+            
             # 3. Create Database Notification (for history)
             Notification.objects.create(
                 recipient=worker_user,
-                title=f"New Request : {truncated_desc}",
-                message=f"You received a request from {employer_profile.company_name}",
+                title="New Job Offer",
+                message=f"Employer in {job_request.city} have shown interest! Check 'Requests'.",
                 related_id=job_request.id
             )
 
@@ -111,7 +118,7 @@ class JobRequestView(APIView):
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
+# show all the job requests send by the employer to the worker induvidually.
 class JobRequestHandleView(APIView):
     permission_classes = [IsAuthenticated, IsEmployer]
     
@@ -146,7 +153,7 @@ class JobRequestHandleView(APIView):
         # Paginate the queryset
         result_page = paginator.paginate_queryset(queryset, request)
         
-        serializer = JobRequestHandleSerializer(result_page, many=True)
+        serializer = JobRequestHandleSerializer(result_page, many=True, context={'request': request})
         
         # Use paginator.get_paginated_response to get the 'next', 'previous', and 'count' fields
         response_data = paginator.get_paginated_response(serializer.data).data
@@ -154,6 +161,7 @@ class JobRequestHandleView(APIView):
         cache.set(cache_key, response_data, 60 * 10)
         return Response(response_data, status=status.HTTP_200_OK)
 
+# show job induvidually in the employer side and also perform the tasks like cancel the request and start the work etc..
 class JobRequestInduvidualHandleView(APIView):
     permission_classes=[IsAuthenticated,IsEmployer]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -204,7 +212,7 @@ class JobRequestInduvidualHandleView(APIView):
                 job_request.save()
                 
                 # Fetch fresh data to ensure all related fields are present
-                serializer = JobRequestHandleSerializer(job_request)
+                serializer = JobRequestHandleSerializer(job_request, context={'request': request})
                 response_data = serializer.data
                 response_data['message'] = message # Attach message to the data
 
@@ -250,22 +258,27 @@ class JobRequestInduvidualHandleView(APIView):
             # --- CACHE CLEARING START ---
             # 1. Clear Employer side (all pages/statuses)
             # We use a loop or delete_pattern to ensure we catch those '_page_X' suffixes
+            cache_key_prefix = f"employer_box_{employer_profile_id}"
+
             if hasattr(cache, 'delete_pattern'):
-                cache.delete_pattern(f"employer_box_{employer_profile_id}_*")
+                # Efficient: Deletes everything matching the wildcard in one go (e.g., Redis)
+                cache.delete_pattern(f"{cache_key_prefix}_*")
             else:
-                # Manual fallback for common pages if delete_pattern isn't available
-                keys_to_delete = []
-                for job_status in ['all', 'pending', 'cancelled', 'accepted']:
-                    for page in range(1, 5): # Clears first 5 pages
-                        keys_to_delete.append(f'employer_box_{employer_profile_id}_{job_status}_page_{page}')
+                # Fallback: Manually build the list of likely keys
+                keys_to_delete = [f"{cache_key_prefix}_all"]
+                
+                statuses = ['all', 'pending', 'cancelled', 'accepted']
+                # If you must clear by page, do so, but consider a "versioning" 
+                # strategy instead if this list gets too long.
+                for job_status in statuses:
+                    for page in range(1, 6): 
+                        keys_to_delete.append(f'{cache_key_prefix}_{job_status}_page_{page}')
+                        
                 cache.delete_many(keys_to_delete)
 
             # 2. Clear Worker side 
-            # If the worker has pagination too, use a pattern here as well!
-            if hasattr(cache, 'delete_pattern'):
-                cache.delete_pattern(f"worker_inbox_{job_request.worker_id}_*")
-            else:
-                cache.delete(f'worker_inbox_{job_request.worker_id}') 
+            worker_id = job_request.worker.id
+            cache.delete(f"worker_inbox_{worker_id}")
             # --- CACHE CLEARING END ---
 
             return Response(response_data, status=status.HTTP_200_OK)
@@ -292,7 +305,7 @@ class EmployerHandleRequestView(APIView):
                 status='pending'
             ).select_related('worker__user').order_by('-created_at')
 
-            serializer = JobRequestHandleSerializer(interests, many=True)
+            serializer = JobRequestHandleSerializer(interests, many=True, context={'request': request})
             return Response({'results': serializer.data}, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -312,7 +325,19 @@ class EmployerHandleRequestView(APIView):
 
             # 2. Update the status
             job_request.status = action
+            
+            # LOCK THE RATE if it's not already set (safety fallback)
+            if action == 'accepted' and not job_request.contract_hourly_rate:
+                job_request.contract_hourly_rate = job_request.worker.hourly_rate
+                
             job_request.save()
+            
+            Notification.objects.create(
+                recipient=job_request.worker.user.user,
+                title=f"Request {action}",
+                message=f"Employer {employer_profile.company_name} has {action} your request for the job you have request in the city {job_request.city}",
+                related_id=job_request.id
+            )
 
             # --- REAL-TIME NOTIFICATION ---
             try:
@@ -326,6 +351,7 @@ class EmployerHandleRequestView(APIView):
                         "type": "send_notification",
                         "payload": {
                             "type": "INTEREST_UPDATE",
+                            "title": f"Request {action}",
                             "job_id": job_request.id,
                             "new_status": action,
                             "message": f"Your interest for job in {job_request.city} has been {action}."
@@ -334,6 +360,8 @@ class EmployerHandleRequestView(APIView):
                 )
             except Exception as e:
                 print(f"Failed to send interest update notification: {e}")
+
+            
 
             # 3. CRITICAL: Clear the Worker's Redis cache!
             # Since the worker's inbox relies on Redis, we must delete it so they see the change.
@@ -485,5 +513,98 @@ class JobPostHandleDelete(APIView):
         except AttributeError:
             return Response({'error':'could delete the post'},status=status.HTTP_404_NOT_FOUND)
 
+#---------------------------------------------PAYMENT LOGIC---------------------------------------------------
 
-    
+class CreateRayzorpayClientOrder(APIView):
+    permission_classes = [IsAuthenticated,IsEmployer]
+    def post(self,request,job_billing_id):
+        try:
+            billing = JobBilling.objects.get(id=job_billing_id)
+            if billing.total_amount is None or billing.total_amount <= 0:
+                return Response(
+                    {"error": "Invalid amount. Billing total must be greater than zero."}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            total_amount = billing.total_amount
+            amount_in_paise = int(total_amount*100)
+
+            data = {
+            "amount": amount_in_paise,
+            "currency": "INR",
+            "receipt": f"job_rcpt_{billing.id}",
+            "notes": {
+                "job_id": billing.job.id,
+                "billing_id": billing.id
+                }
+            }
+        
+            razorpay_order = client.order.create(data=data)
+
+            billing.razorpay_order_id = razorpay_order['id']
+            billing.save()
+
+            return Response({
+                "order_id": razorpay_order['id'],
+                "amount": amount_in_paise,
+                "currency": "INR",
+                "key_id": settings.RAZORPAY_API_KEY
+            },status=status.HTTP_201_CREATED)
+        
+        except JobBilling.DoesNotExist:
+            return Response({"error": "Billing record not found"}, status=404)
+        except Exception as e:
+            # Catch network errors or Razorpay API errors
+            return Response({"error": str(e)}, status=500)
+        
+class RayzorpayVerifyClientOrder(APIView):
+    permission_classes = [IsAuthenticated,IsEmployer]
+    def post(self,request):
+
+        order_id = request.data.get('razorpay_order_id')
+        payment_id = request.data.get('razorpay_payment_id')
+        signature = request.data.get('razorpay_signature')
+
+        data_to_verify = {
+            'razorpay_order_id': order_id,
+            'razorpay_payment_id': payment_id,
+            'razorpay_signature': signature
+        }
+
+        try:
+            client.utility.verify_payment_signature(data_to_verify)
+
+            billing = JobBilling.objects.get(razorpay_order_id=order_id)
+            billing.is_paid = True
+            billing.razorpay_payment_id = payment_id
+            billing.paid_at = timezone.now()
+            billing.save()
+
+            # Clear dashboard cache so "Paid" status reflects immediately
+            from django.core.cache import cache
+            employer_id = billing.job.employer.id
+            cache_keys = [f"employer_box_{employer_id}_{s}_page_{p}" for s in ['all', 'completed', 'in_progress'] for p in range(1, 6)]
+            cache.delete_many(cache_keys)
+
+            return Response({
+                "message": "Payment verified successfully",
+                "billing_id": billing.id
+            }, status=status.HTTP_200_OK)
+
+        except razorpay.errors.SignatureVerificationError:
+            return Response({"error": "Signature verification failed"}, status=400)
+        except JobBilling.DoesNotExist:
+            return Response({"error": "Billing record not found"}, status=404)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+class EmployerPaymentHistoryView(APIView):
+    permission_classes = [IsAuthenticated, IsEmployer]
+    def get(self, request):
+        try:
+            # Safer, more direct way to filter for the specific employer
+            employer = request.user.profile.employer_profile
+            billings = JobBilling.objects.filter(job__employer=employer, is_paid=True).order_by('-paid_at')
+            serializer = JobBillingSerializer(billings, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)

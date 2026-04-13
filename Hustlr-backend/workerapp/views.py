@@ -13,9 +13,18 @@ import logging
 from .permissions import IsWorker
 from .models import WorkerProfile,Skill
 from .serializers import WorkerProfileReadSerializer,SkillSerializer,WorkerProfileWriteSerializer,WorkerActiveJobSerializer,JobMaterialSerializer
-from employerapp.serializers import JobRequestSerializer,NotificationSerializer,JobPostSerializer
+from employerapp.serializers import JobRequestSerializer,NotificationSerializer,JobPostSerializer,JobRequestHandleSerializer
 from employerapp.models import JobRequest,Notification,JobMaterials,JobPost
 from employerapp.permissions import IsEmployer
+
+# for the analytics part to include the dynamo db in our project
+import boto3
+import os
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from boto3.dynamodb.conditions import Key
+from decimal import Decimal
 
 # Create your views here.
 
@@ -167,9 +176,13 @@ class JobInboxView(APIView):
 
         try:
             # If not in Redis, go to the Database
-            active_statuses = ['pending', 'accepted', 'rejected', 'cancelled']
+            # For the actionable inbox, we only show 'pending' requests that were 
+            # INITIATED BY THE EMPLOYER (job_post is null). 
+            # Worker-initiated interest (job_post is NOT null) stays on the employer's desk.
+            active_statuses = ['pending', 'accepted', 'rejected','cancelled']
             requests = request.user.profile.worker_profile.received_job_offers.filter(
-                status__in=active_statuses
+                status__in=active_statuses,
+                job_post__isnull=True
             ).order_by('-created_at') # Always good to show newest first!
             serializer = JobRequestSerializer(requests, many=True)
             data = serializer.data
@@ -225,10 +238,14 @@ class HandleJobRequestView(APIView):
 
         # 3. Update based on the action
         if action == 'accept':
+            if job_req.status != 'pending':
+                return Response({'error': f'Cannot accept a job that is already {job_req.status}'}, status=400)
             job_req.status = 'accepted'
             job_req.contract_hourly_rate = job_req.worker.hourly_rate
             message = "Job accepted and rate locked."
         elif action == 'reject':
+            if job_req.status != 'pending':
+                return Response({'error': f'Cannot reject a job that is already {job_req.status}'}, status=400)
             job_req.status = 'rejected'
             message = "Job rejected."
         elif action == 'start':
@@ -239,7 +256,12 @@ class HandleJobRequestView(APIView):
         elif action == 'finish':
             if job_req.status != 'in_progress':
                 return Response({'error': 'You can only finish a job that is in progress.'}, status=400)
-            
+
+            if not job_req.start_time:
+                return Response({
+                    'error': 'Job start time is missing. Please contact support or restart the timer.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+                    
             from django.utils import timezone
             from decimal import Decimal
             
@@ -252,19 +274,38 @@ class HandleJobRequestView(APIView):
             total_seconds = Decimal(duration.total_seconds())
             hours = total_seconds / Decimal(3600)
             
-            base_pay = Decimal(job_req.worker.base_Pay or 0)
-            hourly_rate = Decimal(job_req.contract_hourly_rate or job_req.worker.hourly_rate or 0)
+            base_pay = Decimal(job_req.worker.base_Pay or 0) # 100
+            hourly_rate = Decimal(job_req.contract_hourly_rate or job_req.worker.hourly_rate or 0) # 200
 
             # Logic: Always give base_pay. After 1 hour, add hourly_rate for extra time.
+            extra_pay = Decimal('0.00')
             if hours <= 1:
                 labor_amount = base_pay
             else:
-                labor_amount = base_pay + (hours - 1) * hourly_rate
+                extra_time = hours - Decimal('1.0')
+                extra_pay = extra_time * hourly_rate
             
             from employerapp.models import JobBilling
             billing, created = JobBilling.objects.get_or_create(job=job_req)
+
+            # --- PENALTY LOGIC (20%) ---
+            # If actual hours exceed the worker's estimate, apply a 20% deduction
+            if job_req.estimated_hours and hours > Decimal(str(job_req.estimated_hours)):
+                billing.was_penalty_applied = True
+                extra_pay = extra_pay * Decimal('0.80') # 20% reduction
+            else:
+                billing.was_penalty_applied = False
+
+            labor_amount = base_pay + extra_pay
+            
             billing.labor_amount = labor_amount
-            material_amount = Decimal(request.data.get('material_amount', 0))
+            
+            try:
+                raw_material_amount = request.data.get('material_amount', 0.00)
+                material_amount = Decimal(str(raw_material_amount)) if raw_material_amount else Decimal('0.00')
+            except Exception:
+                material_amount = Decimal('0.00')
+                
             billing.material_amount = material_amount
             billing.total_amount = labor_amount + material_amount
             
@@ -320,12 +361,14 @@ class HandleJobRequestView(APIView):
             employer_profile_id = job_req.employer.id  # Get the employer from the job request
 
             # 1. Clear Worker side
-            if hasattr(cache, 'delete_pattern'):
-                cache.delete_pattern(f"worker_inbox_{worker_id}")
-            else:
-                cache.delete(f"worker_inbox_{worker_id}")
-
+            cache.delete(f"worker_inbox_{worker_id}")
+            
             # 2. Clear Employer side (The missing piece!)
+            if hasattr(cache, 'delete_pattern'):
+                cache.delete_pattern(f"employer_box_{employer_profile_id}_*")
+            else:
+                cache.delete(f"employer_box_{employer_profile_id}_all")
+                cache.delete(f"employer_box_{employer_profile_id}_pending")
             if hasattr(cache, 'delete_pattern'):
                 cache.delete_pattern(f"employer_box_{employer_profile_id}_*")
             else:
@@ -341,7 +384,24 @@ class HandleJobRequestView(APIView):
         # --- CACHE INVALIDATION LOGIC END ---
 
         return Response(response_data, status=status.HTTP_200_OK)
+
+class JobRequestInduvidualWorkerHandleView(APIView):
+    permission_classes = [IsAuthenticated, IsWorker]
     
+    def get(self, request, jobRequestId):
+        try:
+            worker_profile_id = request.user.profile.worker_profile.id
+            job_req = JobRequest.objects.select_related('worker__user', 'employer__user').get(
+                pk=jobRequestId, 
+                worker_id=worker_profile_id
+            )
+            serializer = JobRequestHandleSerializer(job_req, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except JobRequest.DoesNotExist:
+            return Response({'error': 'Job request not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
     def patch(self, request, jobRequestId):
         try:
             job = JobRequest.objects.get( pk=jobRequestId, worker__user__user=request.user)
@@ -366,7 +426,7 @@ class SendingInterestedRequestView(APIView):
         
         
             if JobRequest.objects.filter(job_post=job,worker=worker_profile).exists():
-                return Response({'error':'you have send an interest reuqest for this post once'},status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error':'you have send an interest request for this post once'},status=status.HTTP_400_BAD_REQUEST)
             
             job_request = JobRequest.objects.create(
                 job_post =job,
@@ -375,6 +435,7 @@ class SendingInterestedRequestView(APIView):
                 description=job.description,
                 city=job.city,
                 project_image=job.job_image,
+                contract_hourly_rate=worker_profile.hourly_rate, # LOCK THE RATE NOW
                 status='pending'
             )
 
@@ -392,7 +453,7 @@ class GetNotificationView(APIView):
         try:
             # 1. Fetch notifications for the current user
             # We use recipient=request.user because your model links to HustlrUsers
-            notifications = Notification.objects.select_related('recipient').filter(recipient=request.user)
+            notifications = Notification.objects.select_related('recipient').filter(recipient=request.user).order_by('-created_at')
             serializer = NotificationSerializer(notifications, many=True)
             unread_notification = notifications.filter(is_read=False).count()
 
@@ -464,3 +525,64 @@ class SeeJobMaterialsView(APIView):
 
         serializer = JobMaterialSerializer(notes, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class WorkerAnalyticsView(APIView):
+    permission_classes=[IsAuthenticated,IsWorker]
+
+    def get(self, request):
+        # 1. Identify the worker (using the logged-in user's ID)
+        try:
+            # 1. Follow the chain: User -> Profile -> WorkerProfile
+            worker_profile = request.user.profile.worker_profile
+            worker_id = str(worker_profile.id)
+        except AttributeError:
+            return Response(
+                {"error": "Worker profile not found for this user."}, 
+                status=status.HTTP_404_NOT_FOUND    
+            )
+        
+        # 2. Connect to DynamoDB
+        dynamodb = boto3.resource('dynamodb', region_name=os.getenv('AWS_REGION', 'ap-south-1'))
+        table = dynamodb.Table(os.getenv('ANALYTICS_TABLE_NAME', 'Hustlr_Worker_Analytics'))
+
+        # 3. Fetch Lifetime Summary
+        summary_res = table.get_item(Key={'PK': f'WORKER#{worker_id}', 'SK': 'SUMMARY'})
+        summary = summary_res.get('Item', {
+            'total_revenue': 0,
+            'job_count': 0,
+            'penalty_count': 0
+        })
+
+        # 4. Fetch Job Entries for Graphing (Query by Prefix)
+        jobs_res = table.query(
+            KeyConditionExpression=Key('PK').eq(f'WORKER#{worker_id}') & 
+                                   Key('SK').begins_with('JOB#')
+        )
+        job_items = jobs_res.get('Items', [])
+
+        # 5. Format the data for Frontend Charts (e.g., Chart.js or Recharts)
+        graph_data = {
+            "labels": [item['timestamp'][:10] for item in job_items], # YYYY-MM-DD
+            "revenue_points": [float(item['total_amount']) for item in job_items],
+            "labor_points": [float(item['labor_amount']) for item in job_items]
+        }
+
+        return Response({
+            "summary": summary,
+            "chart_data": graph_data
+        })
+
+class WorkerPaymentHistoryView(APIView):
+    permission_classes = [IsAuthenticated, IsWorker]
+    def get(self, request):
+        try:
+            # Safer, more direct way to filter for the specific worker
+            worker = request.user.profile.worker_profile
+            from employerapp.models import JobBilling
+            from employerapp.serializers import JobBillingSerializer
+            billings = JobBilling.objects.filter(job__worker=worker, is_paid=True).order_by('-paid_at')
+            serializer = JobBillingSerializer(billings, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)

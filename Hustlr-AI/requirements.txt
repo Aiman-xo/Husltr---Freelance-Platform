@@ -15,3 +15,6 @@ black
 isort
 flake8
 redis
+pytest
+pytest-mock
+httpx

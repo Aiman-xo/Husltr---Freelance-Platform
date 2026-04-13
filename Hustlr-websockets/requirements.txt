@@ -45,3 +45,6 @@ typing_extensions==4.15.0
 tzdata==2025.2
 ujson==5.11.0
 zope.interface==8.2
+pytest
+pytest-django
+pytest-asyncio

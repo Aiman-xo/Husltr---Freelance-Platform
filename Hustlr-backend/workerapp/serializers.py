@@ -1,10 +1,16 @@
 from .models import WorkerProfile,Skill
 from employerapp.models import JobRequest,JobMaterials
 from rest_framework.serializers import ModelSerializer
+from django.core.validators import MinValueValidator, MaxValueValidator
 from rest_framework import serializers
 
 
 class WorkerProfileWriteSerializer(serializers.ModelSerializer):
+    
+    base_Pay = serializers.IntegerField(validators=[MinValueValidator(0), MaxValueValidator(99999)])
+    experience = serializers.IntegerField(validators=[MinValueValidator(0), MaxValueValidator(999)])
+    hourly_rate = serializers.IntegerField(validators=[MinValueValidator(0), MaxValueValidator(99999)])
+
     skills = serializers.PrimaryKeyRelatedField(
         queryset=Skill.objects.all(),
         many=True

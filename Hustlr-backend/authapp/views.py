@@ -13,6 +13,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView, Response
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.throttling import ScopedRateThrottle
 
 from .models import HustlrUsers, Profile, ResetPassword
 from .serializers import (
@@ -30,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 
 class UserCreateView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
+
     @swagger_auto_schema(
         request_body=CreateUserSerializer,
         responses={
@@ -58,6 +62,7 @@ class UserCreateView(APIView):
             token["email"] = user.email
             token["role"] = user.profile.active_role
             token["date_joined"] = str(user.date_joined)
+            token["is_profile_setup"] = False
 
             refresh_token = str(token)
             access_token = str(token.access_token)
@@ -84,6 +89,9 @@ class UserCreateView(APIView):
 
 
 class LoginView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
+
     @swagger_auto_schema(
         request_body=LoginSerializer,
         responses={
@@ -110,6 +118,15 @@ class LoginView(APIView):
         email = serializer.validated_data.get("email")
         password = serializer.validated_data.get("password")
 
+        try:
+            user_obj = HustlrUsers.objects.get(email=email)
+        except HustlrUsers.DoesNotExist:
+            return Response({"message": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        # 2. Check if they are blocked before even checking the password
+        if not user_obj.is_active:
+            return Response({"message": "You are blocked by admin"}, status=status.HTTP_403_FORBIDDEN)
+
         user = authenticate(request=request, email=email, password=password)
 
         if not user:
@@ -130,16 +147,35 @@ class LoginView(APIView):
             token = RefreshToken.for_user(user)
             token["id"] = user.id
             token["email"] = user.email
-            token["role"] = user.profile.active_role
+            # token["role"] = user.profile.active_role
             token["date_joined"] = str(user.date_joined)
+
+            if user.is_superuser:
+                role = "admin"
+                is_setup = True
+            else:
+                # Regular users MUST have a profile
+                if not hasattr(user, 'profile'):
+                    return Response({"message": "User profile missing"}, status=404)
+                role = user.profile.active_role
+                if role == "worker":
+                    is_setup = hasattr(user.profile, 'worker_profile')
+                elif role == "employer":
+                    is_setup = hasattr(user.profile, 'employer_profile')
+                else:
+                    is_setup = False
+            
+            token["role"] = role
+            token["is_profile_setup"] = is_setup
             refresh_token = str(token)
             access_token = str(token.access_token)
             
-            try:
-                print(f"DEBUG LOGIN: Triggering RabbitMQ for User {user.id} ({user.profile.active_role})", flush=True)
-                publish_user_details(user.id, user.profile.active_role)
-            except Exception as e:
-                logger.error(f"Post-login publisher failed: {e}")
+            if not user.is_superuser:
+                try:
+                    print(f"DEBUG LOGIN: Triggering RabbitMQ for User {user.id} ({user.profile.active_role})", flush=True)
+                    publish_user_details(user.id, user.profile.active_role)
+                except Exception as e:
+                    logger.error(f"Post-login publisher failed: {e}")
 
         except AttributeError:
             return Response(
@@ -203,7 +239,34 @@ class CookieRefreshView(APIView):
             token = RefreshToken(refresh_token)
             user_id = token["user_id"]
             user = HustlrUsers.objects.get(id=user_id)
+            
+            # Critical check: do not refresh if user is blocked
+            if not user.is_active:
+                return Response(
+                    {"error": "You are blocked by the platform admin."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
             new_refresh = RefreshToken.for_user(user)
+
+            # --- ADD CUSTOM CLAIMS TO REFRESHED TOKEN ---
+            new_refresh["id"] = user.id
+            new_refresh["email"] = user.email
+            role = "admin" if user.is_superuser else getattr(user.profile, 'active_role', 'worker')
+            new_refresh["role"] = role
+            new_refresh["date_joined"] = str(user.date_joined)
+            
+            if user.is_superuser:
+                is_setup = True
+            else:
+                if role == "worker":
+                    is_setup = hasattr(user.profile, 'worker_profile')
+                elif role == "employer":
+                    is_setup = hasattr(user.profile, 'employer_profile')
+                else:
+                    is_setup = False
+            new_refresh["is_profile_setup"] = is_setup
+            
             new_access = new_refresh.access_token
             token.blacklist()
 
@@ -233,6 +296,9 @@ class CookieRefreshView(APIView):
 
 
 class GenerateOTPView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
+    
     def post(self, request):
         serializer = GenerateOTPserializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -249,6 +315,9 @@ class GenerateOTPView(APIView):
 
 
 class VerifyOTPView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
+
     def post(self, request):
 
         serializer = VerifyOTPSerializer(data=request.data)
@@ -262,6 +331,9 @@ class VerifyOTPView(APIView):
 
 
 class ResetPasswordView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
+
     def post(self, request):
         serializer = ResetPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -365,15 +437,30 @@ class GoogleOAuthView(APIView):
                 if not profile.active_role:
                     raise ValueError("User has no assigned role")
 
+                if not user.is_active:
+                    raise ValueError("You are blocked by admin")
+
                 update_last_login(None, user)
         except ValueError as e:
-            return Response({"error": str(e)}, status=400)
+            return Response({"error": str(e)}, status=403 if "blocked" in str(e).lower() else 400)
 
         refresh = RefreshToken.for_user(user)
         refresh["id"] = user.id
         refresh["role"] = profile.active_role
         refresh["date_joined"] = str(user.date_joined)
         refresh["email"] = user.email
+
+        if user.is_superuser:
+            is_setup = True
+        else:
+            role_type = profile.active_role
+            if role_type == "worker":
+                is_setup = hasattr(profile, 'worker_profile')
+            elif role_type == "employer":
+                is_setup = hasattr(profile, 'employer_profile')
+            else:
+                is_setup = False
+        refresh["is_profile_setup"] = is_setup
 
         response = Response(
             {"access_token": str(refresh.access_token), "is_new_user": created},

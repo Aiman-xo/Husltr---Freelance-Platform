@@ -5,12 +5,14 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 
 import random
+import re
 from django.utils import timezone
 from django.db import transaction
 
 class CreateUserSerializer(ModelSerializer):
     confirm_password = serializers.CharField(write_only=True)
     role = serializers.ChoiceField(choices=Profile.ROLE_CHOICES,write_only=True)
+    email = serializers.EmailField()
     class Meta:
         model = HustlrUsers
         fields = ['email','password','confirm_password','role']
@@ -28,6 +30,8 @@ class CreateUserSerializer(ModelSerializer):
         
 
     def validate_email(self,email):
+        if not re.match(r"^[a-zA-Z0-9._%+-]+@([a-zA-Z0-9-]{2,}\.)+[a-zA-Z]{2,}$", email):
+            raise serializers.ValidationError("Enter a valid email address with a proper domain (e.g. gmail.com)")
         if HustlrUsers.objects.filter(email=email).exists():
             raise serializers.ValidationError("Email already exists")
         return email
@@ -37,7 +41,8 @@ class CreateUserSerializer(ModelSerializer):
         password = validated_data.pop('password')
         role = validated_data.pop('role')
         with transaction.atomic():
-            user = HustlrUsers.objects.create_user(password=password,**validated_data)
+            user = HustlrUsers.objects.create_user(password=password,is_superuser=False,
+                is_staff=False,**validated_data)
 
             if not role:
                 raise serializers.ValidationError('please select a role!')
@@ -51,12 +56,17 @@ class CreateUserSerializer(ModelSerializer):
     
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.CharField()
+    email = serializers.EmailField()
     password = serializers.CharField(
         style={'input_type': 'password'}, 
         trim_whitespace=False,
         required=True
     )
+
+    def validate_email(self, email):
+        if not re.match(r"^[a-zA-Z0-9._%+-]+@([a-zA-Z0-9-]{2,}\.)+[a-zA-Z]{2,}$", email):
+            raise serializers.ValidationError("Enter a valid email address with a proper domain (e.g. gmail.com)")
+        return email
 
 
 

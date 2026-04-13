@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     'workerapp',
     'employerapp',
     'locationapp',
+    'adminapp',
     'cloudinary',
     'cloudinary_storage'
 
@@ -127,7 +128,16 @@ AUTH_PASSWORD_VALIDATORS = [
 REST_FRAMEWORK={
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-    )
+    ),
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle'
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/min',       # Global rate for unauthenticated users
+        'user': '1000/min',      # Global rate for authenticated users
+        'auth': '5/min',         # Stricter rate for auth endpoints (signup, login, reset)
+    }
 }
 
 SIMPLE_JWT={
@@ -209,7 +219,6 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
-# settings.py
 
 CHANNEL_LAYERS = {
     "default": {
@@ -319,3 +328,6 @@ cloudinary.config(
     api_secret = os.getenv("CLOUD_SECRET_KEY"),
     secure=True,
 )
+
+RAZORPAY_API_KEY = os.getenv("RAZORPAY_API_KEY")
+RAZORPAY_SECRET_KEY = os.getenv("RAZORPAY_SECRET_KEY")

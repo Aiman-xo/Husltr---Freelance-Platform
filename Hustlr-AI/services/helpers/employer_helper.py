@@ -44,18 +44,26 @@ def fetch_workers_for_employer(query: str, nearby_ids: list, db: Session):
                     wp."base_Pay" as base_pay,
                     wp.hourly_rate
                 FROM authapp_profile p
-                JOIN workerapp_workerprofile wp ON p.id = wp.user_id
+                INNER JOIN workerapp_workerprofile wp ON p.id = wp.user_id
                 WHERE p.user_id IN :ids
             """)
             
-            rows = db.execute(metadata_query, {"ids": tuple(found_ids)}).fetchall()
-            print(f"DEBUG: SQL query returned {len(rows)} worker profiles for IDs {found_ids}", flush=True)
+            # Use tuple for SQLAlchemy IN clause compatibility
+            id_tuple = tuple(found_ids)
+            rows = db.execute(metadata_query, {"ids": id_tuple}).fetchall()
+            print(f"DEBUG: SQL query returned {len(rows)} worker profiles for IDs {id_tuple}", flush=True)
             
             for row in rows:
                 # Construct S3 URL if image exists
                 avatar_url = None
                 if row.avatar:
-                    avatar_url = f"https://aiman-hustlr-media.s3.ap-south-1.amazonaws.com/{row.avatar}"
+                    if "cloudinary.com" in str(row.avatar):
+                        filename = str(row.avatar).split('/')[-1]
+                        avatar_url = f"https://aiman-hustlr-media.s3.ap-south-1.amazonaws.com/profile_pics/{filename}"
+                    elif str(row.avatar).startswith('http'):
+                        avatar_url = row.avatar
+                    else:
+                        avatar_url = f"https://aiman-hustlr-media.s3.ap-south-1.amazonaws.com/{row.avatar}"
                 
                 worker_metadata.append({
                     "id": row.worker_profile_id, # Sent to frontend for Job Requests

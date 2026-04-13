@@ -1,4 +1,5 @@
 from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
 from authapp.models import Profile,HustlrUsers
 from workerapp.models import WorkerProfile
 from workerapp.models import Skill
@@ -34,14 +35,13 @@ class JobRequest(models.Model):
     city = models.CharField(max_length=255)
     project_image = models.ImageField(
         upload_to='job_requests/', 
-        storage=MediaCloudinaryStorage(), # Explicitly set Cloudinary here
         null=True, 
         blank=True
     )
     
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     contract_hourly_rate = models.IntegerField(null=True, blank=True)
-    estimated_hours = models.FloatField(null=True, blank=True)
+    estimated_hours = models.FloatField(null=True, blank=True, validators=[MinValueValidator(0.01), MaxValueValidator(9999)])
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
     is_timer_active = models.BooleanField(default=False)
@@ -64,11 +64,11 @@ class JobRequest(models.Model):
 
 class JobPost(models.Model):
     employer = models.ForeignKey(EmployerProfile, on_delete=models.CASCADE, related_name='sent_hiring_posts')
-    title = models.CharField(max_length=200)
+    title = models.CharField(max_length=100)
     description = models.TextField()
     city = models.CharField(max_length=100)
     required_skills = models.ManyToManyField(Skill, related_name='job_posts',blank=True)  
-    job_image = models.ImageField(upload_to='job_posts/',storage=MediaCloudinaryStorage(),null=True,blank=True)
+    job_image = models.ImageField(upload_to='job_posts/',null=True,blank=True)
 
 class JobMaterials(models.Model):
     job = models.ForeignKey(JobRequest, on_delete=models.CASCADE, related_name='materials')
@@ -87,14 +87,19 @@ class JobBilling(models.Model):
     
     # Section 1: Work Pay (Automatically calculated from time * rate)
     labor_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    
-    # Section 2: Material/Bill Amount (Manually entered by worker)
-    material_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    material_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, validators=[MinValueValidator(0), MaxValueValidator(99999)])
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     
     was_penalty_applied = models.BooleanField(default=False)
-    bill_image = models.ImageField(upload_to='job_bills/', storage=MediaCloudinaryStorage(), null=True, blank=True)
+    bill_image = models.ImageField(upload_to='job_bills/', null=True, blank=True)
     submitted_at = models.DateTimeField(auto_now_add=True)
+
+    # --- NEW FIELDS FOR RAZORPAY ---
+
+    razorpay_order_id = models.CharField(max_length=100, null=True, blank=True)
+    is_paid = models.BooleanField(default=False)
+    razorpay_payment_id = models.CharField(max_length=100, null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"Billing for Job #{self.job.id} - Total: {self.total_amount}"
