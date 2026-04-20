@@ -24,7 +24,13 @@ app = FastAPI(root_path="/ai",lifespan=lifespan)
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For development, allow all. Change to specific origins in production.
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://hustlrs-ivory.vercel.app",
+        "https://hustlrr.duckdns.org",
+        "https://hustlrr.duckdns.org:30443"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

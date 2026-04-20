@@ -22,7 +22,7 @@ import boto3
 import os
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from django.conf import settings
 from boto3.dynamodb.conditions import Key
 from decimal import Decimal
 
@@ -528,50 +528,80 @@ class SeeJobMaterialsView(APIView):
 
 
 class WorkerAnalyticsView(APIView):
-    permission_classes=[IsAuthenticated,IsWorker]
+    permission_classes = [IsAuthenticated, IsWorker]
+
+    def convert_decimal(self, obj):
+        """Recursively converts Decimal objects to float/int for JSON serialization."""
+        if isinstance(obj, list):
+            return [self.convert_decimal(i) for i in obj]
+        elif isinstance(obj, dict):
+            return {k: self.convert_decimal(v) for k, v in obj.items()}
+        elif isinstance(obj, Decimal):
+            return float(obj) if obj % 1 > 0 else int(obj)
+        return obj
 
     def get(self, request):
-        # 1. Identify the worker (using the logged-in user's ID)
         try:
-            # 1. Follow the chain: User -> Profile -> WorkerProfile
             worker_profile = request.user.profile.worker_profile
             worker_id = str(worker_profile.id)
         except AttributeError:
             return Response(
-                {"error": "Worker profile not found for this user."}, 
-                status=status.HTTP_404_NOT_FOUND    
+                {"error": "Worker profile not found for this user."},
+                status=status.HTTP_404_NOT_FOUND,
             )
-        
-        # 2. Connect to DynamoDB
-        dynamodb = boto3.resource('dynamodb', region_name=os.getenv('AWS_REGION', 'ap-south-1'))
-        table = dynamodb.Table(os.getenv('ANALYTICS_TABLE_NAME', 'Hustlr_Worker_Analytics'))
 
-        # 3. Fetch Lifetime Summary
-        summary_res = table.get_item(Key={'PK': f'WORKER#{worker_id}', 'SK': 'SUMMARY'})
-        summary = summary_res.get('Item', {
-            'total_revenue': 0,
-            'job_count': 0,
-            'penalty_count': 0
-        })
+        try:
+            # 2. Connect to DynamoDB with explicit credentials and a timeout
+            from botocore.config import Config
+            config = Config(connect_timeout=5, read_timeout=5, retries={"max_attempts": 2})
+            
+            dynamodb = boto3.resource(
+                "dynamodb",
+                region_name=os.getenv("AWS_REGION", "ap-south-1"),
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                config=config,
+            )
+            table = dynamodb.Table(
+                os.getenv("ANALYTICS_TABLE_NAME", "Hustlr_Worker_Analytics")
+            )
 
-        # 4. Fetch Job Entries for Graphing (Query by Prefix)
-        jobs_res = table.query(
-            KeyConditionExpression=Key('PK').eq(f'WORKER#{worker_id}') & 
-                                   Key('SK').begins_with('JOB#')
-        )
-        job_items = jobs_res.get('Items', [])
+            # 3. Fetch Lifetime Summary
+            summary_res = table.get_item(Key={"PK": f"WORKER#{worker_id}", "SK": "SUMMARY"})
+            summary = summary_res.get(
+                "Item",
+                {"total_revenue": 0, "job_count": 0, "penalty_count": 0},
+            )
 
-        # 5. Format the data for Frontend Charts (e.g., Chart.js or Recharts)
-        graph_data = {
-            "labels": [item['timestamp'][:10] for item in job_items], # YYYY-MM-DD
-            "revenue_points": [float(item['total_amount']) for item in job_items],
-            "labor_points": [float(item['labor_amount']) for item in job_items]
-        }
+            # 4. Fetch Job Entries for Graphing
+            jobs_res = table.query(
+                KeyConditionExpression=Key("PK").eq(f"WORKER#{worker_id}")
+                & Key("SK").begins_with("JOB#")
+            )
+            job_items = jobs_res.get("Items", [])
 
-        return Response({
-            "summary": summary,
-            "chart_data": graph_data
-        })
+            # 5. Format and Convert Decimals to be JSON-serializable
+            graph_data = {
+                "labels": [item["timestamp"][:10] for item in job_items],
+                "revenue_points": [float(item["total_amount"]) for item in job_items],
+                "labor_points": [float(item["labor_amount"]) for item in job_items],
+            }
+
+            return Response(
+                {
+                    "summary": self.convert_decimal(summary),
+                    "chart_data": graph_data,
+                }
+            )
+
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"DynamoDB Analytics Error: {str(e)}")
+            return Response(
+                {"error": "Analytics dashboard is temporarily unavailable. Please try again later."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
 class WorkerPaymentHistoryView(APIView):
     permission_classes = [IsAuthenticated, IsWorker]

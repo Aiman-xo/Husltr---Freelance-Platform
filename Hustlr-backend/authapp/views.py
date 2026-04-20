@@ -79,8 +79,8 @@ class UserCreateView(APIView):
                 key="refresh_token",
                 value=refresh_token,
                 httponly=True,
-                secure=False,
-                samesite="Lax",
+                secure=True,
+                samesite="None",
                 max_age=60 * 60 * 24,
                 path="/",
             )
@@ -202,8 +202,8 @@ class LoginView(APIView):
             key="refresh_token",
             value=refresh_token,
             httponly=True,
-            secure=False,
-            samesite="Lax",
+            secure=True,
+            samesite="None",
             max_age=60 * 60 * 24,
             path="/",
         )
@@ -289,8 +289,8 @@ class CookieRefreshView(APIView):
             key="refresh_token",
             value=str(new_refresh),
             httponly=True,
-            secure=False,
-            samesite="Lax",
+            secure=True,
+            samesite="None",
         )
         return response
 
@@ -472,7 +472,7 @@ class GoogleOAuthView(APIView):
             value=str(refresh),
             httponly=True,
             secure=True,
-            samesite="Lax",
+            samesite="None",
         )
 
         return response
