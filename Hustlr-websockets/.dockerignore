@@ -6,6 +6,10 @@ node_modules/
 .vscode/
 .idea/
 *.log
+
+.pytest_cache/
+.DS_Store
+*.swp
 db.sqlite3
 .git
 venv/

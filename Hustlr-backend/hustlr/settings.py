@@ -31,7 +31,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = ['*']
 
@@ -101,8 +101,11 @@ DATABASES = {
         'NAME': os.getenv('DB_NAME'),
         'USER': os.getenv('DB_USER'),
         'PASSWORD': os.getenv('DB_PASSWORD'),
-        'HOST': 'db',
-        'PORT': '5432'
+        'OPTIONS': {
+            'sslmode': 'require',
+        },
+        'HOST': 'aws-1-ap-south-1.pooler.supabase.com',
+        'PORT': '6543'
     }
 }
 
@@ -141,7 +144,7 @@ REST_FRAMEWORK={
 }
 
 SIMPLE_JWT={
-    'ACCESS_TOKEN_LIFETIME': timedelta(seconds=30),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
 
     "ROTATE_REFRESH_TOKENS": True,
@@ -176,6 +179,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://hustlrr.duckdns.org",
+    "https://hustlrr.duckdns.org:30443"
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -183,6 +188,8 @@ CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "https://hustlrr.duckdns.org",
+    "https://hustlrr.duckdns.org:30443"
 ]
 
 CORS_ALLOW_HEADERS = [
@@ -224,7 +231,7 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": ["redis://redis:6379/1"],
+            "hosts": ["redis://127.0.0.1:6379/1"],
         },
     },
 }
@@ -264,7 +271,7 @@ CACHES = {
     "default": {
         "BACKEND": "django_redis.cache.RedisCache",
         # 'redis' matches the service name in your docker-compose.yaml
-        "LOCATION": "redis://redis:6379/1", 
+        "LOCATION": "redis://127.0.0.1:6379/1", 
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
         }

@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -10,10 +11,21 @@ load_dotenv(dotenv_path="../Hustlr-backend/.env")
 # Secondary load for local service-specific keys
 load_dotenv()
 
+RAW_PASS=os.getenv('POSTGRES_PASSWORD')
+safe_password = urllib.parse.quote_plus(RAW_PASS)
+
 def sync():
     # 1. Database Connection
-    DB_URL = f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@db:5432/{os.getenv('POSTGRES_DB')}"
-    engine = create_engine(DB_URL)
+    DB_URL = f"postgresql://postgres.sktvofaxkckavhwceufr:{safe_password}@aws-1-ap-south-1.pooler.supabase.com:6543/postgres"
+    engine = create_engine(
+
+        DB_URL,
+        pool_size=5,             # Maintain 5 steady connections
+        max_overflow=10,        # Allow 10 extra if busy
+        pool_recycle=300,       # Reset connections every 5 mins
+        pool_pre_ping=True      # Check if connection is alive before using it
+
+    )
 
     # 2. Fetch Worker Data (Connecting Profile -> WorkerProfile)
     query = """

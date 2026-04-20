@@ -39,10 +39,7 @@ services:
     #   - "8000:8000"
     env_file:
       - ./Hustlr-backend/.env
-    environment:
-      - DB_HOST=db
     depends_on:
-      - db
       - redis
 
   # 4. The Celery Worker
@@ -85,13 +82,11 @@ services:
     env_file:
       - ./Hustlr-backend/.env
     environment:
-      - DB_HOST=db
       - DJANGO_SETTINGS_MODULE=websocketproject.settings
     command: daphne -b 0.0.0.0 -p 8001 websocketproject.asgi:application
     volumes:
       - ./Hustlr-websockets:/app
     depends_on:
-      - db
       - redis
 
   ai-service:
@@ -104,10 +99,7 @@ services:
     #   - "8002:8002"
     env_file:
       - ./Hustlr-backend/.env
-    environment:
-      - DB_HOST=db  # Keep this consistent with your backend
     depends_on:
-      - db
       - rabbitmq
   
   n8n:
@@ -121,18 +113,17 @@ services:
       - N8N_HOST=localhost
       - NODE_ENV=production
       - DB_TYPE=postgresdb
-      - DB_POSTGRESDB_HOST=db
-      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_HOST=aws-1-ap-south-1.pooler.supabase.com #db  
+      - DB_POSTGRESDB_PORT=6543 #5432 
       # Use the variables from your existing .env file
       - DB_POSTGRESDB_DATABASE=${POSTGRES_DB} 
       - DB_POSTGRESDB_USER=${POSTGRES_USER}
       - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED=false
     volumes:
       - n8n_data:/home/node/.n8n
     env_file:
       - ./Hustlr-backend/.env
-    depends_on:
-      - db
   
   
   nginx:

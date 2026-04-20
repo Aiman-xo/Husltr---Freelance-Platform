@@ -7,7 +7,7 @@ def send_job_to_n8n(self, job_data):
     Celery task to notify n8n about a new job.
     Retries up to 3 times if the connection fails.
     """
-    webhook_url = "http://hustlr_n8n:5678/webhook/job-posted"
+    webhook_url = "http://gateway-entry/webhook/job-posted"
     
     try:
         response = httpx.post(webhook_url, json=job_data, timeout=5.0)

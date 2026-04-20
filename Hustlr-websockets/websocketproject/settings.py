@@ -24,7 +24,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = ['*']
 
@@ -79,7 +79,7 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [os.environ.get('REDIS_URL', 'redis://redis:6379/1')],
+            "hosts": [os.environ.get('REDIS_URL', 'redis://127.0.0.1:6379/1')],
         },
     },
 }
@@ -92,10 +92,13 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.environ.get('POSTGRES_DB', 'postgres'),
-        'USER': os.environ.get('POSTGRES_USER', 'postgres'),
-        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'postgres'),
-        'HOST': os.environ.get('DB_HOST', 'db'), # 'db' matches your docker-compose service name
-        'PORT': 5432,
+        'USER': os.environ.get('POSTGRES_USER', 'postgres.sktvofaxkckavhwceufr'),
+        'OPTIONS': {
+            'sslmode': 'require',
+        },
+        'PASSWORD': os.environ.get('POSTGRES_PASSWORD'),
+        'HOST': os.environ.get('DB_HOST', 'aws-1-ap-south-1.pooler.supabase.com'), # 'db' matches your docker-compose service name
+        'PORT': '6543',
     }
 }
 
