@@ -18,7 +18,9 @@ hustlrvenv/
 
 # Django
 db.sqlite3
-*.log
+# AI Service
+Hustlr-AI/faiss_index/
+faiss_index/
 media/
 staticfiles/
 

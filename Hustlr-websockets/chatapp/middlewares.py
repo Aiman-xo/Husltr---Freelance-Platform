@@ -25,10 +25,11 @@ class JWTAuthMiddleware:
                 )
                 
                 scope["user_id"] = decoded_data.get("user_id")
-                scope["allowed_room"] = decoded_data.get("room_name") # This is the "Ticket"
+                # Tokens for chat will have 'room_name', others might not
+                scope["allowed_room"] = decoded_data.get("room_name") 
                 
-                if not scope["user_id"] or not scope["allowed_room"]:
-                    logger.warning("Middleware: Token valid but missing claims.")
+                if not scope["user_id"]:
+                    logger.warning("Middleware: Token decoded but missing user_id.")
                     
             except Exception as e:
                 logger.error(f"Middleware Auth Error: {e}")

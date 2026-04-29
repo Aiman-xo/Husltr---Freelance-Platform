@@ -182,7 +182,7 @@ class JobInboxView(APIView):
             active_statuses = ['pending', 'accepted', 'rejected','cancelled']
             requests = request.user.profile.worker_profile.received_job_offers.filter(
                 status__in=active_statuses,
-                job_post__isnull=True
+                is_employer_initiated=True
             ).order_by('-created_at') # Always good to show newest first!
             serializer = JobRequestSerializer(requests, many=True)
             data = serializer.data
@@ -367,15 +367,12 @@ class HandleJobRequestView(APIView):
             if hasattr(cache, 'delete_pattern'):
                 cache.delete_pattern(f"employer_box_{employer_profile_id}_*")
             else:
-                cache.delete(f"employer_box_{employer_profile_id}_all")
-                cache.delete(f"employer_box_{employer_profile_id}_pending")
-            if hasattr(cache, 'delete_pattern'):
-                cache.delete_pattern(f"employer_box_{employer_profile_id}_*")
-            else:
-                # Fallback loop if delete_pattern isn't available
-                for job_status in ['all', 'pending', 'cancelled', 'accepted', 'rejected']:
-                    for page in range(1, 5):
+                # Comprehensive fallback loop for all common statuses and pages
+                statuses = ['all', 'pending', 'cancelled', 'accepted', 'rejected', 'in_progress', 'completed', 'starting', 'accepted,in_progress,starting,completed']
+                for job_status in statuses:
+                    for page in range(1, 11):
                         cache.delete(f'employer_box_{employer_profile_id}_{job_status}_page_{page}')
+                cache.delete(f"employer_box_{employer_profile_id}_all")
 
             print(f"--- CACHES DELETED for Worker {worker_id} and Employer {employer_profile_id} ---")
             
@@ -436,7 +433,8 @@ class SendingInterestedRequestView(APIView):
                 city=job.city,
                 project_image=job.job_image,
                 contract_hourly_rate=worker_profile.hourly_rate, # LOCK THE RATE NOW
-                status='pending'
+                status='pending',
+                is_employer_initiated=False
             )
 
             return Response({'message': 'Interest sent successfully!'}, status=status.HTTP_201_CREATED)

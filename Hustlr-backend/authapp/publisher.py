@@ -1,14 +1,16 @@
 import pika
 import json
 import logging
+import os
 
 logger =logging.getLogger(__name__)
 def publish_user_details(user_id,role):
     
     try:
 
+        rabbitmq_host = os.getenv('RABBITMQ_HOST', 'localhost')
         connection = pika.BlockingConnection(
-            pika.ConnectionParameters(host='rabbitmq')
+            pika.ConnectionParameters(host=rabbitmq_host)
         )
 
         channel = connection.channel()

@@ -2,11 +2,11 @@ import pika
 import json
 import redis
 
-redis_client = redis.Redis(host='redis', port=6379, db=0, decode_responses=True)
+redis_client = redis.Redis(host='127.0.0.1', port=6379, db=0, decode_responses=True)
 
 def start_user_sync_consumer():
     try:
-        connection = pika.BlockingConnection(pika.ConnectionParameters(host='rabbitmq'))
+        connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
         channel = connection.channel()
         channel.queue_declare(queue='user_sync_que',durable=True)
 

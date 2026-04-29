@@ -1,4 +1,3 @@
 __pycache__/
-faiss_index/
 *.pyc
 .env

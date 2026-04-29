@@ -1,6 +1,6 @@
 from django.urls import path
 from .views import EmployerProfileSetupView,JobRequestView,JobRequestHandleView,JobRequestInduvidualHandleView,ChatListView, MaterialToggleView,JobPostView,\
-EmployerHandleRequestView,JobPostHandleDelete,CreateRayzorpayClientOrder,RayzorpayVerifyClientOrder,EmployerPaymentHistoryView
+EmployerHandleRequestView,JobPostHandleDelete,CreateRayzorpayClientOrder,RayzorpayVerifyClientOrder,EmployerPaymentHistoryView,PlatformStatsView
 
 urlpatterns = [
     path("employer-setup/", EmployerProfileSetupView.as_view(), name="employer-setup"),
@@ -16,4 +16,5 @@ urlpatterns = [
     path('create-payment-client/<int:job_billing_id>/',CreateRayzorpayClientOrder.as_view(),name='create-client'),
     path('payment-verify/',RayzorpayVerifyClientOrder.as_view(),name='verify-payment'),
     path('payment-history/', EmployerPaymentHistoryView.as_view(), name='payment-history'),
+    path('platform-stats/', PlatformStatsView.as_view(), name='platform-stats'),
 ]

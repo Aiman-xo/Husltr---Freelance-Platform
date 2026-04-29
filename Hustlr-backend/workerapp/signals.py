@@ -1,55 +1,73 @@
+from django.db.models import Sum, Count, Q
 import boto3
 import os
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from decimal import Decimal
 from employerapp.models import JobBilling
+from django.conf import settings
+import logging
 
-# Initialize DynamoDB using your .env variables
-dynamodb = boto3.resource(
-    'dynamodb',
-    region_name=os.getenv('AWS_REGION', 'ap-south-1')
-)
-table = dynamodb.Table(os.getenv('ANALYTICS_TABLE_NAME', 'Hustlr_Worker_Analytics'))
+logger = logging.getLogger(__name__)
 
 @receiver(post_save, sender=JobBilling)
 def update_worker_analytics(sender, instance, created, **kwargs):
     """
     Triggers whenever a JobBilling record is saved.
-    Updates the worker's total stats and logs the individual job entry.
+    Recalculates worker totals from SQL and updates DynamoDB atomically.
     """
-    worker_id = instance.job.worker.id
-    
-    # Convert Decimal to float/int for DynamoDB (it doesn't like Python Decimals)
-    revenue = float(instance.total_amount or 0)
-    labor = float(instance.labor_amount or 0)
-    
-    # 1. Update the overall SUMMARY for the worker (Atomic Update)
-    # This adds to the existing numbers so you don't have to fetch them first
-    table.update_item(
-        Key={
-            'PK': f'WORKER#{worker_id}',
-            'SK': 'SUMMARY'
-        },
-        UpdateExpression="ADD total_revenue :r, job_count :j, penalty_count :p",
-        ExpressionAttributeValues={
-            ':r': Decimal(str(revenue)),
-            ':j': 1 if created else 0,
-            ':p': 1 if instance.was_penalty_applied else 0
-        }
-    )
+    try:
+        worker_id = instance.job.worker.id
+        
+        # 1. Initialize DynamoDB
+        dynamodb = boto3.resource(
+            'dynamodb',
+            region_name=getattr(settings, "AWS_S3_REGION_NAME", os.getenv("AWS_REGION", "ap-south-1")),
+            aws_access_key_id=getattr(settings, "AWS_ACCESS_KEY_ID", None),
+            aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", None)
+        )
+        table_name = os.getenv('ANALYTICS_TABLE_NAME', 'Hustlr_Worker_Analytics')
+        table = dynamodb.Table(table_name)
 
-    # 2. Store the individual JOB entry for the Line Graph
-    # We use the date in the Sort Key (SK) so we can query by date range later
-    date_str = instance.submitted_at.strftime("%Y%m%d")
-    table.put_item(
-        Item={
-            'PK': f'WORKER#{worker_id}',
-            'SK': f'JOB#{date_str}#{instance.job.id}',
-            'total_amount': Decimal(str(revenue)),
-            'labor_amount': Decimal(str(labor)),
-            'was_penalty': instance.was_penalty_applied,
-            'timestamp': instance.submitted_at.isoformat(),
-            'type': 'BILLING_ENTRY'
-        }
-    )
+        # 2. Calculate REAL totals from SQL (Only counting PAID jobs)
+        # This ensures revenue only shows up after payment success
+        stats = JobBilling.objects.filter(
+            job__worker__id=worker_id,
+            is_paid=True
+        ).aggregate(
+            total_rev=Sum('total_amount'),
+            j_count=Count('id'),
+            p_count=Count('id', filter=Q(was_penalty_applied=True))
+        )
+
+
+        # 3. Update the SUMMARY item (Uses put_item to overwrite and fix any previous errors)
+        table.put_item(
+            Item={
+                'PK': f'WORKER#{worker_id}',
+                'SK': 'SUMMARY',
+                'total_revenue': Decimal(str(stats['total_rev'] or 0)),
+                'job_count': stats['j_count'],
+                'penalty_count': stats['p_count'],
+                'type': 'WORKER_SUMMARY'
+            }
+        )
+
+        # 4. Store/Update the individual JOB entry (For Charts)
+        # We use put_item here too so it just overwrites if it already exists
+        if instance.submitted_at:
+            date_str = instance.submitted_at.strftime("%Y%m%d")
+            table.put_item(
+                Item={
+                    'PK': f'WORKER#{worker_id}',
+                    'SK': f'JOB#{date_str}#{instance.job.id}',
+                    'total_amount': Decimal(str(instance.total_amount or 0)),
+                    'labor_amount': Decimal(str(instance.labor_amount or 0)),
+                    'was_penalty': instance.was_penalty_applied,
+                    'timestamp': instance.submitted_at.isoformat(),
+                    'type': 'BILLING_ENTRY'
+                }
+            )
+
+    except Exception as e:
+        logger.error(f"Failed to update DynamoDB worker analytics: {str(e)}")

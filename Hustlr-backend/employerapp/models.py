@@ -45,6 +45,7 @@ class JobRequest(models.Model):
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
     is_timer_active = models.BooleanField(default=False)
+    is_employer_initiated = models.BooleanField(default=True)
 
     expiry_notification_sent = models.BooleanField(default=False)
     

@@ -1,0 +1,5 @@
+faiss_index/
+__pycache__/
+.env
+.pytest_cache/
+*.pyc

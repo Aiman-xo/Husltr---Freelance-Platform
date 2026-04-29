@@ -18,12 +18,27 @@ embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
 llm = ChatGroq(model="llama-3.1-8b-instant")
 
 # 3. Global FAISS Loading (Saves significant time per request)
-try:
-    vector_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
-    print("FAISS index loaded successfully.")
-except Exception as e:
-    print(f"CRITICAL: Failed to load FAISS index: {e}")
-    vector_db = None
+# 3. Global FAISS Loading (Resilient)
+vector_db = None
+
+def load_or_sync_index():
+    global vector_db
+    from services.sync_service import run_vector_sync
+    
+    try:
+        if os.path.exists("faiss_index"):
+            print("Attempting to load existing FAISS index...")
+            vector_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+            print("FAISS index loaded successfully.")
+        else:
+            print("FAISS index not found. Performing initial sync...")
+            run_vector_sync()
+    except Exception as e:
+        print(f"Index loading error: {e}. Attempting recovery sync...")
+        run_vector_sync()
+
+# Initial load attempt
+load_or_sync_index()
 
 def is_greeting(query: str) -> bool:
     """Checks if the query is a simple greeting and NOTHING else."""

@@ -4,14 +4,14 @@ from django.db import transaction
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from .models import EmployerProfile,JobRequest,Notification, JobMaterials,JobPost,JobBilling
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from .serializers import EmployerProfileSerializer,JobRequestSerializer,JobRequestHandleSerializer,ChatContactSerializer,JobPostSerializer,JobBillingSerializer
 from .permissions import IsEmployer
 from workerapp.permissions import IsWorker
 
-from django.db.models import Q,Max
+from django.db.models import Q, Max, Sum
 from rest_framework.pagination import PageNumberPagination
 
 from asgiref.sync import async_to_sync
@@ -23,6 +23,7 @@ from drf_yasg.utils import swagger_auto_schema
 import razorpay
 from hustlr import settings
 from django.utils import timezone
+from authapp.models import HustlrUsers
 
 client = razorpay.Client(auth=(settings.RAZORPAY_API_KEY, settings.RAZORPAY_SECRET_KEY))
 
@@ -66,7 +67,7 @@ class JobRequestView(APIView):
 
         if serializer.is_valid():
             
-            job_request = serializer.save(employer=employer_profile)
+            job_request = serializer.save(employer=employer_profile, is_employer_initiated=True)
 
 
             # 2. Get the recipient's User ID
@@ -256,25 +257,18 @@ class JobRequestInduvidualHandleView(APIView):
             # --- REAL-TIME NOTIFICATION END ---
 
             # --- CACHE CLEARING START ---
-            # 1. Clear Employer side (all pages/statuses)
-            # We use a loop or delete_pattern to ensure we catch those '_page_X' suffixes
+            # Clear all cached versions of the employer's dashboard to ensure immediate updates
+            # across all tabs (All, Active, Accepted, etc.) and all pages.
             cache_key_prefix = f"employer_box_{employer_profile_id}"
-
             if hasattr(cache, 'delete_pattern'):
-                # Efficient: Deletes everything matching the wildcard in one go (e.g., Redis)
                 cache.delete_pattern(f"{cache_key_prefix}_*")
             else:
-                # Fallback: Manually build the list of likely keys
-                keys_to_delete = [f"{cache_key_prefix}_all"]
-                
-                statuses = ['all', 'pending', 'cancelled', 'accepted']
-                # If you must clear by page, do so, but consider a "versioning" 
-                # strategy instead if this list gets too long.
+                # Fallback: Delete common keys if delete_pattern is not available
+                statuses = ['all', 'pending', 'cancelled', 'accepted', 'in_progress', 'completed', 'starting', 'accepted,in_progress,starting,completed']
                 for job_status in statuses:
-                    for page in range(1, 6): 
-                        keys_to_delete.append(f'{cache_key_prefix}_{job_status}_page_{page}')
-                        
-                cache.delete_many(keys_to_delete)
+                    for page in range(1, 11): 
+                        cache.delete(f'{cache_key_prefix}_{job_status}_page_{page}')
+                cache.delete(f"{cache_key_prefix}_all")
 
             # 2. Clear Worker side 
             worker_id = job_request.worker.id
@@ -301,7 +295,7 @@ class EmployerHandleRequestView(APIView):
             # and are still pending.
             interests = JobRequest.objects.filter(
                 employer=employer_profile,
-                job_post__isnull=False,
+                is_employer_initiated=False,
                 status='pending'
             ).select_related('worker__user').order_by('-created_at')
 
@@ -363,10 +357,19 @@ class EmployerHandleRequestView(APIView):
 
             
 
-            # 3. CRITICAL: Clear the Worker's Redis cache!
-            # Since the worker's inbox relies on Redis, we must delete it so they see the change.
-            cache_key = f"worker_inbox_{job_request.worker.id}"
-            cache.delete(cache_key)
+            # 3. CRITICAL: Clear Caches!
+            # Clear worker's inbox and employer's dashboard to reflect status change immediately.
+            cache.delete(f"worker_inbox_{job_request.worker.id}")
+            
+            employer_id = employer_profile.id
+            cache_key_prefix = f"employer_box_{employer_id}"
+            if hasattr(cache, 'delete_pattern'):
+                cache.delete_pattern(f"{cache_key_prefix}_*")
+            else:
+                statuses = ['all', 'pending', 'cancelled', 'accepted', 'in_progress', 'completed', 'starting', 'accepted,in_progress,starting,completed']
+                for job_status in statuses:
+                    for page in range(1, 11):
+                        cache.delete(f"{cache_key_prefix}_{job_status}_page_{page}")
 
             return Response({
                 'message': f'Request has been {action}.',
@@ -483,7 +486,22 @@ class JobPostView(APIView):
             return Response({'error': 'Employer profile not found.'}, status=status.HTTP_404_NOT_FOUND)
         serializer = JobPostSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save(employer=employer_profile)
+            job_post = serializer.save(employer=employer_profile)
+            
+            # --- TRIGGER AI SYNC START ---
+            def trigger_ai_sync():
+                import requests
+                try:
+                    # Point to the ai-service container directly via Docker network
+                    # Or use the external URL if needed, but internal is better.
+                    requests.post("http://localhost:8002/sync", timeout=10)
+                except Exception as e:
+                    print(f"AI Sync Trigger Failed: {e}")
+            
+            import threading
+            threading.Thread(target=trigger_ai_sync, daemon=True).start()
+            # --- TRIGGER AI SYNC END ---
+
             return Response({'message':'Job Posted Successfully','data':serializer.data},status=status.HTTP_201_CREATED)
         
         return Response(serializer.errors,status=status.HTTP_400_BAD_REQUEST)
@@ -579,11 +597,50 @@ class RayzorpayVerifyClientOrder(APIView):
             billing.paid_at = timezone.now()
             billing.save()
 
-            # Clear dashboard cache so "Paid" status reflects immediately
+            # Clear dashboard cache for both Employer and Worker so "Paid" status reflects immediately
             from django.core.cache import cache
             employer_id = billing.job.employer.id
-            cache_keys = [f"employer_box_{employer_id}_{s}_page_{p}" for s in ['all', 'completed', 'in_progress'] for p in range(1, 6)]
-            cache.delete_many(cache_keys)
+            worker_id = billing.job.worker.id
+            
+            # Clear all cached versions of the employer's dashboard
+            cache_key_prefix = f"employer_box_{employer_id}"
+            if hasattr(cache, 'delete_pattern'):
+                cache.delete_pattern(f"{cache_key_prefix}_*")
+            else:
+                # Comprehensive fallback for all possible tabs and pages
+                statuses = ['all', 'completed', 'in_progress', 'accepted', 'starting', 'accepted,in_progress,starting,completed']
+                for s in statuses:
+                    for p in range(1, 11):
+                        cache.delete(f"{cache_key_prefix}_{s}_page_{p}")
+            
+            # Also clear worker inbox just in case
+            cache.delete(f"worker_inbox_{worker_id}")
+
+            # --- REAL-TIME NOTIFICATION START ---
+            # Notify the Worker that they have been paid!
+            try:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+                channel_layer = get_channel_layer()
+                
+                # We need the user ID associated with the worker
+                worker_user_id = billing.job.worker.user.id 
+                
+                async_to_sync(channel_layer.group_send)(
+                    f"user_notifications_{worker_user_id}",
+                    {
+                        "type": "send_notification",
+                        "payload": {
+                            "type": "PAYMENT_RECEIVED",
+                            "job_id": billing.job.id,
+                            # "title": "Payment Received! 💰",
+                            "message": f"Employer paid ₹{billing.total_amount} for '{billing.job.title}'."
+                        }
+                    }
+                )
+            except Exception as e:
+                print(f"FAILED TO SEND PAYMENT NOTIFICATION: {e}")
+            # --- REAL-TIME NOTIFICATION END ---
 
             return Response({
                 "message": "Payment verified successfully",
@@ -608,3 +665,31 @@ class EmployerPaymentHistoryView(APIView):
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+
+class PlatformStatsView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        try:
+            # 1. Total number of users
+            total_users = HustlrUsers.objects.count()
+
+            # 2. Total jobs completed
+            jobs_completed = JobRequest.objects.filter(status='completed').count()
+
+            # 3. Number of active jobs right now
+            active_jobs = JobRequest.objects.filter(status__in=['accepted', 'starting', 'in_progress']).count()
+
+            # 4. Total payouts (amount generated)
+            total_payouts_dict = JobBilling.objects.filter(is_paid=True).aggregate(Sum('total_amount'))
+            total_payouts = total_payouts_dict['total_amount__sum'] or 0
+
+            return Response({
+                "total_users": total_users,
+                "jobs_completed": jobs_completed,
+                "active_jobs": active_jobs,
+                "total_payouts": float(total_payouts),
+                "average_rating": 4.9 # Keeping static for now as requested
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

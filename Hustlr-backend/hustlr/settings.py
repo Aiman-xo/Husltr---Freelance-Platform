@@ -144,7 +144,7 @@ REST_FRAMEWORK={
 }
 
 SIMPLE_JWT={
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
 
     "ROTATE_REFRESH_TOKENS": True,
@@ -217,7 +217,9 @@ CORS_ALLOW_METHODS = [
     "DELETE",
 ]
 
-CELERY_BROKER_URL = "rediss://default:AcuwAAIncDFhYzA0ZWQ5ZmM3ZTk0ODE2ODM5ZjRkYjEyYmE1OWZkN3AxNTIxNDQ@usable-man-52144.upstash.io:6379"
+# CELERY_BROKER_URL = "rediss://default:AcuwAAIncDFhYzA0ZWQ5ZmM3ZTk0ODE2ODM5ZjRkYjEyYmE1OWZkN3AxNTIxNDQ@usable-man-52144.upstash.io:6379"
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
+
 
 CELERY_BROKER_USE_SSL = {
     "ssl_cert_reqs": None
@@ -345,3 +347,10 @@ cloudinary.config(
 
 RAZORPAY_API_KEY = os.getenv("RAZORPAY_API_KEY")
 RAZORPAY_SECRET_KEY = os.getenv("RAZORPAY_SECRET_KEY")
+
+# Tells Django to look for the X-Forwarded-Proto header to determine if HTTPS is used
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Ensures Django uses the host and port provided by Nginx in the headers
+USE_X_FORWARDED_HOST = True
+USE_X_FORWARDED_PORT = True

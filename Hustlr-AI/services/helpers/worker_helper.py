@@ -14,15 +14,27 @@ def fetch_jobs_for_worker(query: str, nearby_ids: list, db: Session):
         return job_metadata, final_matches
 
     try:
-        # 1. Semantic Retrieval (Top 30 job matches)
-        # Note: Ensure your vector_db index contains Job Post descriptions!
-        docs = vector_db.similarity_search(query, k=30)
+        # 1. Semantic Retrieval
+        # We increase k to 100 because the index contains both workers and jobs.
+        # If we only fetch 30, and there are many workers matching the query, 
+        # we might miss the jobs entirely in the top results.
+        docs = vector_db.similarity_search(query, k=100)
         
-        # 2. Filter matches to only those posted by Employers physically nearby
-        filtered_docs = [
-            doc for doc in docs 
-            if doc.metadata.get("employer_id") in nearby_ids
-        ]
+        # 2. Filter matches to only JOB types and check proximity
+        # FALLBACK: If nearby_ids is empty, we show all semantically relevant jobs
+        # This prevents 0 results if employers haven't set their GPS coordinates.
+        if not nearby_ids:
+             print("DEBUG: No nearby users found, showing all semantic job matches", flush=True)
+             filtered_docs = [doc for doc in docs if doc.metadata.get("type") == "job"]
+        else:
+            filtered_docs = [
+                doc for doc in docs 
+                if doc.metadata.get("type") == "job" and doc.metadata.get("employer_id") in nearby_ids
+            ]
+        
+        # If still no results, try showing jobs regardless of location as a last resort
+        if not filtered_docs:
+            filtered_docs = [doc for doc in docs if doc.metadata.get("type") == "job"]
         
         final_matches = [doc.page_content for doc in filtered_docs]
         
